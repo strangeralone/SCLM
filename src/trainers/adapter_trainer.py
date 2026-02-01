@@ -161,16 +161,20 @@ class AdapterTrainer:
             
         Returns:
             pseudo_labels: [B]
-            confidence: [B] (余弦相似度，0~1)
+            confidence: [B] (概率，0~1)
             mask: [B] (高置信度 mask)
         """
         # 计算与所有原型的余弦相似度
         similarity = self._cosine_similarity(features, self.prototypes)
         
-        # 伪标签 = 最相似的类
-        confidence, pseudo_labels = similarity.max(dim=1)
+        # 转换为概率 (用 softmax)
+        # temperature=0.1 让分布更 sharp，高相似度的类概率更高
+        probs = F.softmax(similarity / 0.1, dim=1)
         
-        # 高置信度 mask
+        # 伪标签 = 概率最高的类
+        confidence, pseudo_labels = probs.max(dim=1)
+        
+        # 高置信度 mask (现在 confidence 是真正的概率了)
         mask = (confidence > self.confidence_threshold).float()
         
         return pseudo_labels, confidence, mask
