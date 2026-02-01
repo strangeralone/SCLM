@@ -1,0 +1,78 @@
+# =========================================================
+# SFDA 扰动一致性实验 - 默认公共配置
+# =========================================================
+# 此文件包含所有默认配置项
+# 实验时创建单独的配置文件（如 art2clipart.yaml）覆盖需要修改的项
+# 用法: python main.py -c configs/art2clipart.yaml
+# =========================================================
+
+# ============== 数据配置 ==============
+data:
+  root: "data/officehome"
+  source: "Art"                    # 源域: Art, Clipart, Product, RealWorld
+  target: "Clipart"                # 目标域
+  num_classes: 65
+  num_workers: 4
+  image_size: 224
+
+# ============== 模型配置 ==============
+model:
+  backbone: "resnet50"             # resnet50, resnet101
+  pretrained: true                 # 使用ImageNet预训练
+  bottleneck_dim: 256              # Bottleneck特征维度
+  dropout: 0.5
+
+# ============== 训练配置 ==============
+train:
+  # 源域训练
+  source:
+    epochs: 15
+    batch_size: 64
+    lr: 0.01
+    lr_backbone: 0.001             # backbone学习率（较小）
+    momentum: 0.9
+    weight_decay: 0.0005
+    lr_scheduler: "step"           # step, cosine
+    lr_step: 20
+    lr_gamma: 0.1
+
+  # 目标域适应
+  target:
+    epochs: 15
+    batch_size: 64
+    lr: 0.001
+    lr_backbone: 0.0001
+    momentum: 0.9
+    weight_decay: 0.0005
+    
+    # SHOT 超参数
+    ent_weight: 1.0                # 熵最小化权重
+    div_weight: 1.0                # 多样性权重
+    cls_weight: 0.3                # 伪标签交叉熵权重
+    
+    # 扰动一致性过滤 (Self-Guidance inspired)
+    perturbation:
+      enabled: false               # 是否启用扰动一致性过滤
+      noise_scale: 0.1             # 高斯噪声标准差
+      num_perturbations: 10        # 扰动次数
+      threshold: 0.8               # 一致性阈值（硬过滤时使用）
+      soft_weight: true            # true=软加权, false=硬过滤
+
+# ============== 设备配置 ==============
+device:
+  type: "mps"                      # cuda, mps, cpu
+  gpu_id: 0                        # 仅cuda时使用
+
+# ============== 日志配置 ==============
+logging:
+  log_dir: "logs"
+  log_interval: 10                 # 每多少个batch输出一次
+  save_interval: 5                 # 每多少个epoch保存一次
+
+# ============== 保存配置 ==============
+checkpoint:
+  save_dir: "checkpoints"
+  save_best: true
+
+# ============== 随机种子 ==============
+seed: 2024
