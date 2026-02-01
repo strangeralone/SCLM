@@ -58,6 +58,29 @@ train:
       threshold: 0.8               # 一致性阈值（硬过滤时使用）
       soft_weight: true            # true=软加权, false=硬过滤
 
+  # Adapter-based 目标域适应 (One-Step Flow)
+  adapter:
+    epochs: 15
+    batch_size: 32
+    lr: 0.001
+    weight_decay: 0.0001
+    
+    # Adapter 网络结构
+    hidden_dim: 512                # 隐藏层维度
+    num_layers: 2                  # MLP层数
+    dropout: 0.1
+    
+    # Loss 权重
+    align_weight: 1.0              # Huber 对齐损失权重
+    div_weight: 0.1                # 多样性正则权重
+    ent_weight: 0.1                # 熵最小化权重
+    
+    # Huber Loss 参数
+    huber_delta: 1.0               # Huber Loss 的 delta
+    
+    # 置信度过滤
+    confidence_threshold: 0.4      # 伪标签置信度阈值
+
 # ============== 设备配置 ==============
 device:
   type: "mps"                      # cuda, mps, cpu

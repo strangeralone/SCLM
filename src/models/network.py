@@ -146,6 +146,100 @@ class Classifier(nn.Module):
             分类logits [B, num_classes]
         """
         return self.fc(x)
+    
+    def get_prototypes(self) -> torch.Tensor:
+        """
+        获取分类器权重作为类原型
+        
+        Returns:
+            prototypes: [num_classes, in_features]
+        """
+        return self.fc.weight.data
+
+
+class FeatureAdapter(nn.Module):
+    """
+    特征适应器 (Adapter)
+    
+    输入原始特征，输出修正向量 (velocity)
+    f_new = f_t + adapter(f_t)
+    
+    用于将目标域特征推向源域原型
+    """
+    
+    def __init__(
+        self,
+        in_features: int = 256,
+        hidden_dim: int = 512,
+        num_layers: int = 2,
+        dropout: float = 0.1
+    ):
+        """
+        Args:
+            in_features: 输入/输出特征维度
+            hidden_dim: 隐藏层维度
+            num_layers: MLP层数
+            dropout: dropout概率
+        """
+        super().__init__()
+        
+        self.in_features = in_features
+        
+        layers = []
+        current_dim = in_features
+        
+        for i in range(num_layers - 1):
+            layers.extend([
+                nn.Linear(current_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(p=dropout)
+            ])
+            current_dim = hidden_dim
+        
+        # 最后一层输出修正向量
+        layers.append(nn.Linear(current_dim, in_features))
+        
+        self.mlp = nn.Sequential(*layers)
+        
+        # 初始化：让初始输出接近0（残差学习）
+        self._init_weights()
+        
+    def _init_weights(self):
+        """初始化权重，让初始输出接近0"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=0.1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        计算特征修正向量 (velocity)
+        
+        Args:
+            x: 输入特征 [B, in_features]
+            
+        Returns:
+            velocity: 修正向量 [B, in_features]
+        """
+        return self.mlp(x)
+    
+    def adapt(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        适应特征: f_new = f_t + velocity
+        
+        Args:
+            x: 原始特征 [B, in_features]
+            
+        Returns:
+            f_new: 适应后的特征 [B, in_features]
+        """
+        velocity = self.forward(x)
+        return x + velocity
 
 
 class FullModel(nn.Module):

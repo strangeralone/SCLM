@@ -27,9 +27,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.utils.config import load_config, merge_config, update_config_from_args
 from src.utils.logger import setup_logger, log_config
 from src.data.office_home import get_loader
-from src.models.network import create_split_models
+from src.models.network import create_split_models, FeatureAdapter
 from src.trainers.source_trainer import SourceTrainer
 from src.trainers.target_trainer import TargetTrainer
+from src.trainers.adapter_trainer import AdapterTrainer
 
 
 def set_random_seed(seed: int) -> None:
@@ -74,8 +75,8 @@ def parse_args() -> argparse.Namespace:
     # 必需参数
     parser.add_argument(
         "--mode", type=str, required=True,
-        choices=["source", "target", "test"],
-        help="运行模式: source(源域预训练), target(目标域适应), test(测试)"
+        choices=["source", "target", "adapter", "test"],
+        help="运行模式: source(源域预训练), target(目标域适应), adapter(Adapter适应), test(测试)"
     )
     
     # 可选参数
@@ -306,6 +307,97 @@ def run_test(config: dict, logger, device: torch.device, checkpoint_path: str = 
     logger.info(f"目标域 {target} 准确率: {acc:.2f}%")
 
 
+def run_adapter_training(config: dict, logger, device: torch.device, resume: str = None) -> None:
+    """执行 Adapter-based 目标域适应"""
+    source = config['data']['source']
+    target = config['data']['target']
+    logger.info(f"Adapter 目标域适应: {source} -> {target}")
+    
+    # 创建数据加载器
+    train_loader = get_loader(
+        root=config['data']['root'],
+        domain=target,
+        batch_size=config['train'].get('adapter', {}).get('batch_size', 32),
+        train=True,
+        num_workers=config['data']['num_workers'],
+        image_size=config['data']['image_size']
+    )
+    
+    test_loader = get_loader(
+        root=config['data']['root'],
+        domain=target,
+        batch_size=config['train'].get('adapter', {}).get('batch_size', 32),
+        train=False,
+        num_workers=config['data']['num_workers'],
+        image_size=config['data']['image_size']
+    )
+    
+    logger.info(f"目标域训练集大小: {len(train_loader.dataset)}")
+    logger.info(f"目标域测试集大小: {len(test_loader.dataset)}")
+    
+    # 创建模型
+    netG, netF, netC = create_split_models(config)
+    
+    # 加载源域预训练权重
+    if resume:
+        checkpoint_path = resume
+    else:
+        checkpoint_path = os.path.join(
+            config['checkpoint']['save_dir'],
+            f"source_{source}_best.pth"
+        )
+    
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        
+        if 'netG_state_dict' in checkpoint:
+            netG.load_state_dict(checkpoint['netG_state_dict'])
+            netF.load_state_dict(checkpoint['netF_state_dict'])
+            netC.load_state_dict(checkpoint['netC_state_dict'])
+            logger.info(f"已加载源域预训练权重 (New Format): {checkpoint_path}")
+        elif 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+            netG.load_state_dict({k.replace('backbone.', ''): v for k, v in state_dict.items() if k.startswith('backbone.')})
+            netF.load_state_dict({k.replace('bottleneck.', ''): v for k, v in state_dict.items() if k.startswith('bottleneck.')})
+            netC.load_state_dict({k.replace('classifier.', ''): v for k, v in state_dict.items() if k.startswith('classifier.')})
+            logger.info(f"已加载源域预训练权重 (Old Format): {checkpoint_path}")
+        else:
+            logger.warning(f"无法识别checkpoint格式: {checkpoint_path}")
+    else:
+        logger.warning(f"未找到源域预训练权重: {checkpoint_path}，使用随机初始化")
+    
+    netG = netG.to(device)
+    netF = netF.to(device)
+    netC = netC.to(device)
+    
+    # 创建 Adapter
+    adapter_cfg = config['train'].get('adapter', {})
+    adapter = FeatureAdapter(
+        in_features=config['model']['bottleneck_dim'],
+        hidden_dim=adapter_cfg.get('hidden_dim', 512),
+        num_layers=adapter_cfg.get('num_layers', 2),
+        dropout=adapter_cfg.get('dropout', 0.1)
+    )
+    adapter = adapter.to(device)
+    logger.info(f"Adapter 创建完成: hidden_dim={adapter_cfg.get('hidden_dim', 512)}, num_layers={adapter_cfg.get('num_layers', 2)}")
+    
+    # 创建训练器
+    trainer = AdapterTrainer(
+        netG=netG,
+        netF=netF,
+        netC=netC,
+        adapter=adapter,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        config=config,
+        logger=logger,
+        device=device
+    )
+    
+    # 开始训练
+    trainer.train()
+
+
 def main():
     """主函数"""
     # 解析参数
@@ -342,6 +434,8 @@ def main():
         run_source_training(config, logger, device)
     elif args.mode == "target":
         run_target_adaptation(config, logger, device, args.resume)
+    elif args.mode == "adapter":
+        run_adapter_training(config, logger, device, args.resume)
     elif args.mode == "test":
         run_test(config, logger, device, args.resume)
     else:
