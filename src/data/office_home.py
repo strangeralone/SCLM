@@ -47,6 +47,10 @@ class OfficeHomeDataset(Dataset):
     支持两种加载方式：
     1. 从标签文件加载 (如 Art_65.txt)
     2. 从文件夹结构加载
+    
+    数据划分：
+    - 默认按 70% 训练 / 30% 测试 划分
+    - 使用固定随机种子确保划分一致性
     """
     
     DOMAINS = ['Art', 'Clipart', 'Product', 'RealWorld']
@@ -57,26 +61,33 @@ class OfficeHomeDataset(Dataset):
         root: str,
         domain: str,
         transform: Optional[transforms.Compose] = None,
-        train: bool = True
+        train: bool = True,
+        split_ratio: float = 0.7,
+        split_seed: int = 42
     ):
         """
         Args:
             root: 数据集根目录
             domain: 域名称 (Art, Clipart, Product, RealWorld)
             transform: 数据变换
-            train: 是否为训练模式
+            train: 是否为训练模式（True=训练集, False=测试集）
+            split_ratio: 训练集占比（默认0.7，即70%训练/30%测试）
+            split_seed: 划分时使用的随机种子，确保一致性
         """
         self.root = Path(root)
         self.domain = domain
         self.transform = transform
         self.train = train
+        self.split_ratio = split_ratio
+        self.split_seed = split_seed
         
         # 验证域名
         if domain not in self.DOMAINS:
             raise ValueError(f"域 '{domain}' 不存在，可选: {self.DOMAINS}")
         
-        # 加载数据
-        self.samples = self._load_samples()
+        # 加载全部数据，然后进行划分
+        all_samples = self._load_samples()
+        self.samples = self._split_samples(all_samples)
         
     def _load_samples(self) -> List[Tuple[str, int]]:
         """加载样本列表"""
@@ -117,6 +128,29 @@ class OfficeHomeDataset(Dataset):
                         samples.append((str(img_file), cls_idx))
         
         return samples
+    
+    def _split_samples(self, all_samples: List[Tuple[str, int]]) -> List[Tuple[str, int]]:
+        """
+        根据 train 参数划分训练集或测试集
+        
+        使用固定随机种子确保每次划分结果一致
+        """
+        import random
+        
+        # 使用固定种子打乱样本，确保每次运行划分一致
+        rng = random.Random(self.split_seed)
+        shuffled = all_samples.copy()
+        rng.shuffle(shuffled)
+        
+        # 计算划分点
+        split_idx = int(len(shuffled) * self.split_ratio)
+        
+        if self.train:
+            # 训练集: 前 split_ratio (70%)
+            return shuffled[:split_idx]
+        else:
+            # 测试集: 后 1-split_ratio (30%)
+            return shuffled[split_idx:]
     
     def __len__(self) -> int:
         return len(self.samples)
