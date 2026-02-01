@@ -62,7 +62,7 @@ class OfficeHomeDataset(Dataset):
         domain: str,
         transform: Optional[transforms.Compose] = None,
         train: bool = True,
-        split_ratio: float = 0.7,
+        split_ratio: float = 0.9,
         split_seed: int = 42
     ):
         """
