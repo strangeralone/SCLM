@@ -79,11 +79,15 @@ train:
     huber_delta: 1.0               # Huber Loss 的 delta
     
     # 置信度过滤
-    confidence_threshold: 0.4      # 伪标签置信度阈值
+    confidence_threshold: 0.7      # 伪标签置信度阈值 (余弦相似度)
+    
+    # 动态原型更新
+    use_dynamic_prototype: true    # 是否启用动态原型
+    prototype_momentum: 0.9        # EMA 动量 (0.9~0.99)
 
 # ============== 设备配置 ==============
 device:
-  type: "mps"                      # cuda, mps, cpu
+  type: "cuda"                      # cuda, mps, cpu
   gpu_id: 0                        # 仅cuda时使用
 
 # ============== 日志配置 ==============
