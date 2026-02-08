@@ -1,0 +1,94 @@
+# =========================================================
+# SFDA CLIP 拓扑修正实验配置
+# =========================================================
+# 基于 CLIP 视觉特征的几何结构修正伪标签
+# 用法: python main.py -c configs/art2clipart_clip.yaml
+# =========================================================
+
+# 继承默认配置
+# ============== 数据配置 ==============
+data:
+  root: "data/officehome"
+  source: "Art"
+  target: "Clipart"
+  num_classes: 65
+  num_workers: 4
+  image_size: 224
+
+# ============== 模型配置 ==============
+model:
+  backbone: "resnet50"
+  pretrained: true
+  bottleneck_dim: 256
+  dropout: 0.5
+
+# ============== 训练配置 ==============
+train:
+  # 源域训练
+  source:
+    epochs: 15
+    batch_size: 64
+    lr: 0.01
+    lr_backbone: 0.001
+    label_smooth_epsilon: 0.1
+
+  # 目标域适应 - 启用 CLIP 拓扑修正
+  target:
+    epochs: 15
+    batch_size: 64
+    lr: 0.001
+    lr_backbone: 0.0001
+    momentum: 0.9
+    weight_decay: 0.0005
+    
+    # SHOT 超参数
+    ent_weight: 1.0
+    div_weight: 1.0
+    cls_weight: 0.3
+    
+    # 禁用扰动一致性（使用 CLIP 替代）
+    perturbation:
+      enabled: false
+    
+    # 启用 CLIP 拓扑修正
+    clip_rectification:
+      enabled: true
+      tau: 0.07                    # 温度系数
+      alpha: 0.8                   # 邻居 vs 自身平衡
+      num_iters: 5                 # 标签传播迭代次数
+
+  # Adapter 配置（保持默认）
+  adapter:
+    epochs: 15
+    batch_size: 32
+    lr: 0.001
+    weight_decay: 0.0001
+    hidden_dim: 512
+    num_layers: 2
+    dropout: 0.1
+    align_weight: 1.0
+    div_weight: 0.1
+    ent_weight: 0.1
+    huber_delta: 1.0
+    confidence_threshold: 0.7
+    use_dynamic_prototype: true
+    prototype_momentum: 0.9
+
+# ============== 设备配置 ==============
+device:
+  type: "mps"                      # Mac 使用 MPS
+  gpu_id: 0
+
+# ============== 日志配置 ==============
+logging:
+  log_dir: "logs"
+  log_interval: 10
+  save_interval: 5
+
+# ============== 保存配置 ==============
+checkpoint:
+  save_dir: "checkpoints"
+  save_best: true
+
+# ============== 随机种子 ==============
+seed: 2024

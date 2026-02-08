@@ -17,7 +17,12 @@ from typing import Dict, Any, Optional, Tuple
 import logging
 import numpy as np
 
+import open_clip
+
 from ..utils.logger import AverageMeter
+
+# 项目根目录，用于设置 CLIP 模型缓存
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class TargetTrainer:
@@ -82,6 +87,19 @@ class TargetTrainer:
         self.consistency_threshold = self.perturbation_cfg.get('threshold', 0.8)
         self.use_soft_weight = self.perturbation_cfg.get('soft_weight', True)
         
+        # ============ CLIP 拓扑修正配置 ============
+        self.clip_cfg = train_cfg.get('clip_rectification', {})
+        self.use_clip_rectification = self.clip_cfg.get('enabled', False)
+        self.clip_tau = self.clip_cfg.get('tau', 0.07)  # 温度系数
+        self.clip_alpha = self.clip_cfg.get('alpha', 0.8)  # 邻居 vs 自身平衡
+        self.clip_num_iters = self.clip_cfg.get('num_iters', 5)  # 迭代次数
+        
+        # 加载 CLIP 模型（如果启用）
+        self.clip_model = None
+        self.clip_preprocess = None
+        if self.use_clip_rectification:
+            self._load_clip_model()
+        
         # 创建保存目录
         os.makedirs(self.save_dir, exist_ok=True)
         
@@ -95,10 +113,17 @@ class TargetTrainer:
         # 伪标签和一致性分数存储
         self.pseudo_labels = None
         self.consistency_scores = None
+        # 修正后的伪标签概率分布（用于软标签训练）
+        self.rectified_probs = None
         
     def train(self) -> None:
         """执行目标域适应"""
         self.logger.info(f"开始目标域适应，共 {self.epochs} 个epoch")
+        
+        # 记录启用的功能
+        if self.use_clip_rectification:
+            self.logger.info(f"启用 CLIP 拓扑修正: tau={self.clip_tau}, "
+                           f"alpha={self.clip_alpha}, num_iters={self.clip_num_iters}")
         if self.use_perturbation:
             self.logger.info(f"启用扰动一致性过滤: noise_scale={self.noise_scale}, "
                            f"num_perturbations={self.num_perturbations}, "
@@ -111,8 +136,12 @@ class TargetTrainer:
         best_acc = init_acc
         
         for epoch in range(1, self.epochs + 1):
-            # 生成伪标签和一致性分数
-            if self.use_perturbation:
+            # ============ 生成伪标签 ============
+            # 优先使用 CLIP 拓扑修正
+            if self.use_clip_rectification:
+                self.pseudo_labels, self.rectified_probs = self._generate_pseudo_labels_with_clip_rectification()
+                self.logger.info(f"Epoch {epoch}: 使用 CLIP 拓扑修正的伪标签")
+            elif self.use_perturbation:
                 self.pseudo_labels, self.consistency_scores = self._generate_pseudo_labels_with_consistency()
                 reliable_ratio = (self.consistency_scores >= self.consistency_threshold).float().mean() * 100
                 self.logger.info(f"Epoch {epoch}: 可靠伪标签比例: {reliable_ratio:.2f}%")
@@ -469,3 +498,153 @@ class TargetTrainer:
             'reliable_ratio_0.9': float((scores >= 0.9).mean()),
             'unreliable_ratio_0.5': float((scores < 0.5).mean()),
         }
+    
+    # ============ CLIP 拓扑修正相关方法 ============
+    
+    def _load_clip_model(self) -> None:
+        """
+        加载 CLIP 模型 (ViT-B/32)
+        使用 open_clip，模型缓存到项目的 vlm 目录
+        """
+        # 设置模型缓存目录
+        vlm_cache_dir = os.path.join(PROJECT_ROOT, 'vlm')
+        os.makedirs(vlm_cache_dir, exist_ok=True)
+        
+        self.logger.info(f"正在加载 CLIP 模型 (ViT-B-32)，缓存目录: {vlm_cache_dir}")
+        
+        # 加载 open_clip 模型
+        # 使用 openai 预训练权重
+        self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
+            'ViT-B-32',
+            pretrained='openai',
+            cache_dir=vlm_cache_dir
+        )
+        
+        # 冻结 CLIP 模型，只用于特征提取
+        self.clip_model = self.clip_model.to(self.device)
+        self.clip_model.eval()
+        for param in self.clip_model.parameters():
+            param.requires_grad = False
+        
+        self.logger.info("CLIP 模型加载完成，已冻结参数")
+    
+    def _extract_clip_features(self) -> torch.Tensor:
+        """
+        提取所有目标域样本的 CLIP 视觉特征
+        
+        Returns:
+            F_clip: CLIP 视觉特征 [N, D]，已 L2 归一化
+        """
+        self.clip_model.eval()
+        all_features = []
+        
+        with torch.no_grad():
+            for images, _, _ in tqdm(self.train_loader, desc="Extracting CLIP features", leave=False):
+                images = images.to(self.device)
+                
+                # 提取 CLIP 视觉特征
+                # open_clip 的 encode_image 直接返回归一化后的特征
+                features = self.clip_model.encode_image(images)
+                features = F.normalize(features, dim=1)  # 确保 L2 归一化
+                
+                all_features.append(features.cpu())
+        
+        F_clip = torch.cat(all_features, dim=0)
+        self.logger.info(f"CLIP 特征提取完成，形状: {F_clip.shape}")
+        
+        return F_clip
+    
+    def _clip_topology_rectification(self, P_source: torch.Tensor, F_clip: torch.Tensor) -> torch.Tensor:
+        """
+        基于 CLIP 视觉拓扑的伪标签修正
+        
+        核心思想：利用 CLIP 定义的"几何邻居关系"来修正源模型的错误预测
+        
+        算法步骤：
+        1. 计算 CLIP 特征的余弦相似度矩阵
+        2. 通过温度系数 tau 的 Softmax 得到软亲和力矩阵
+        3. 迭代标签传播：Y_{t+1} = alpha * W * Y_t + (1-alpha) * Y_init
+        
+        Args:
+            P_source: 源模型预测概率 [N, C]
+            F_clip: CLIP 视觉特征 [N, D]，已 L2 归一化
+            
+        Returns:
+            Y_rectified: 修正后的伪标签概率分布 [N, C]
+        """
+        N = P_source.shape[0]
+        tau = self.clip_tau
+        alpha = self.clip_alpha
+        num_iters = self.clip_num_iters
+        
+        self.logger.info(f"开始 CLIP 拓扑修正: tau={tau}, alpha={alpha}, num_iters={num_iters}")
+        
+        # Step 1: 计算余弦相似度矩阵
+        # 因为 F_clip 已经 L2 归一化，直接点积就是余弦相似度
+        S = F_clip @ F_clip.T  # [N, N]
+        
+        # Step 2: 带温度系数的 Softmax → 软亲和力矩阵
+        # 去掉对角线（避免自己投票给自己）
+        S.fill_diagonal_(-float('inf'))
+        W = F.softmax(S / tau, dim=1)  # [N, N]
+        
+        # Step 3: 迭代标签传播
+        Y = P_source.clone()  # 初始化 Y_0 = P_source
+        Y_init = P_source  # 锚点，始终保留源模型的初始预测
+        
+        for t in range(num_iters):
+            # Y_{t+1} = alpha * W * Y_t + (1 - alpha) * Y_init
+            neighbor_vote = W @ Y  # 邻居加权投票 [N, C]
+            Y = alpha * neighbor_vote + (1 - alpha) * Y_init
+        
+        # 记录修正效果
+        original_pred = P_source.argmax(dim=1)
+        rectified_pred = Y.argmax(dim=1)
+        changed_ratio = (original_pred != rectified_pred).float().mean() * 100
+        self.logger.info(f"CLIP 拓扑修正完成，预测改变比例: {changed_ratio:.2f}%")
+        
+        return Y
+    
+    def _generate_pseudo_labels_with_clip_rectification(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        生成伪标签并使用 CLIP 拓扑进行修正
+        
+        完整流程：
+        1. 源模型生成初始预测 P_source
+        2. CLIP 提取视觉特征 F_clip
+        3. 基于 CLIP 拓扑修正伪标签
+        
+        Returns:
+            pseudo_labels: 修正后的硬标签 [N]
+            rectified_probs: 修正后的软标签概率 [N, C]
+        """
+        self.netG.eval()
+        self.netF.eval()
+        self.netC.eval()
+        
+        # Step 1: 源模型生成初始预测
+        all_probs = []
+        with torch.no_grad():
+            for images, _, _ in tqdm(self.train_loader, desc="Source model prediction", leave=False):
+                images = images.to(self.device)
+                
+                feat = self.netG(images)
+                feat = self.netF(feat)
+                logits = self.netC(feat)
+                
+                probs = F.softmax(logits, dim=1)
+                all_probs.append(probs.cpu())
+        
+        P_source = torch.cat(all_probs, dim=0)  # [N, C]
+        self.logger.info(f"源模型预测完成，形状: {P_source.shape}")
+        
+        # Step 2: CLIP 提取视觉特征
+        F_clip = self._extract_clip_features()  # [N, D]
+        
+        # Step 3: CLIP 拓扑修正
+        rectified_probs = self._clip_topology_rectification(P_source, F_clip)
+        
+        # 生成硬标签
+        pseudo_labels = rectified_probs.argmax(dim=1)
+        
+        return pseudo_labels, rectified_probs

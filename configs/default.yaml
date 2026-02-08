@@ -53,6 +53,13 @@ train:
       num_perturbations: 10        # 扰动次数
       threshold: 0.8               # 一致性阈值（硬过滤时使用）
       soft_weight: true            # true=软加权, false=硬过滤
+    
+    # CLIP 拓扑修正 (基于 CLIP 视觉特征的几何结构修正伪标签)
+    clip_rectification:
+      enabled: false               # 是否启用 CLIP 拓扑修正
+      tau: 0.07                    # 温度系数（越小邻居权重越集中，推荐 0.05-0.1）
+      alpha: 0.8                   # 邻居 vs 自身平衡（推荐 0.7-0.9）
+      num_iters: 5                 # 标签传播迭代次数（推荐 3-5）
 
   # Adapter-based 目标域适应 (One-Step Flow)
   adapter:
