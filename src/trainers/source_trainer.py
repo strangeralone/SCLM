@@ -1,6 +1,6 @@
 """
 源域预训练模块
-标准的监督学习训练
+标准的监督学习训练（贴近 source.py 风格）
 """
 import os
 import torch
@@ -12,12 +12,34 @@ from typing import Dict, Any, Optional
 import logging
 
 from ..utils.logger import AverageMeter
+from ..utils.loss import CrossEntropyLabelSmooth
+
+
+def op_copy(optimizer):
+    """保存优化器初始学习率"""
+    for param_group in optimizer.param_groups:
+        param_group['lr0'] = param_group['lr']
+    return optimizer
+
+
+def lr_scheduler(optimizer, iter_num, max_iter, gamma=10, power=0.75):
+    """
+    Power decay 学习率调度器
+    公式: lr = lr0 * (1 + gamma * iter_num / max_iter)^(-power)
+    """
+    decay = (1 + gamma * iter_num / max_iter) ** (-power)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = param_group['lr0'] * decay
+        param_group['weight_decay'] = 1e-3
+        param_group['momentum'] = 0.9
+        param_group['nesterov'] = True
+    return optimizer
 
 
 class SourceTrainer:
     """
     源域预训练器
-    使用交叉熵损失进行标准监督学习
+    使用标签平滑交叉熵损失进行监督学习
     """
     
     def __init__(
@@ -33,8 +55,8 @@ class SourceTrainer:
     ):
         """
         Args:
-            netG: Backbone
-            netF: Bottleneck
+            netG: Backbone (对应 source.py 的 netF)
+            netF: Bottleneck (对应 source.py 的 netB)
             netC: Classifier
             train_loader: 训练数据加载器
             test_loader: 测试数据加载器（可选）
@@ -53,108 +75,88 @@ class SourceTrainer:
         
         # 训练配置
         train_cfg = config['train']['source']
-        self.epochs = train_cfg['epochs']
+        self.max_epoch = train_cfg['epochs']
         self.lr = train_cfg['lr']
         self.lr_backbone = train_cfg['lr_backbone']
         self.log_interval = config['logging']['log_interval']
-        self.save_interval = config['logging']['save_interval']
         self.save_dir = config['checkpoint']['save_dir']
+        
+        # 标签平滑参数
+        self.label_smooth_epsilon = train_cfg.get('label_smooth_epsilon', 0.1)
+        self.num_classes = config['data']['num_classes']
         
         # 创建保存目录
         os.makedirs(self.save_dir, exist_ok=True)
         
-        # 损失函数
-        self.criterion = nn.CrossEntropyLoss()
+        # 损失函数（使用标签平滑）
+        self.criterion = CrossEntropyLabelSmooth(
+            num_classes=self.num_classes,
+            epsilon=self.label_smooth_epsilon
+        )
         
-        # 优化器（差异化学习率）
-        self.optimizer = optim.SGD([
-            {"params": netG.parameters(), "lr": self.lr_backbone},
-            {"params": netF.parameters(), "lr": self.lr},
-            {"params": netC.parameters(), "lr": self.lr}
-        ], momentum=train_cfg['momentum'], weight_decay=train_cfg['weight_decay'])
+        # 优化器（差异化学习率，贴近 source.py）
+        param_group = []
+        for k, v in netG.named_parameters():
+            param_group += [{'params': v, 'lr': self.lr_backbone}]
+        for k, v in netF.named_parameters():
+            param_group += [{'params': v, 'lr': self.lr}]
+        for k, v in netC.named_parameters():
+            param_group += [{'params': v, 'lr': self.lr}]
         
-        # 学习率调度器
-        if train_cfg['lr_scheduler'] == 'step':
-            self.scheduler = optim.lr_scheduler.StepLR(
-                self.optimizer,
-                step_size=train_cfg['lr_step'],
-                gamma=train_cfg['lr_gamma']
-            )
-        else:
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer,
-                T_max=self.epochs
-            )
+        self.optimizer = optim.SGD(param_group)
+        self.optimizer = op_copy(self.optimizer)
+        
+        # 计算 max_iter
+        self.max_iter = self.max_epoch * len(self.train_loader)
+        self.interval_iter = self.max_iter // 10
         
         # 最佳模型追踪
         self.best_acc = 0.0
         
     def train(self) -> None:
-        """执行完整训练流程"""
-        self.logger.info(f"开始源域预训练，共 {self.epochs} 个epoch")
+        """执行完整训练流程（按 iteration 循环）"""
+        self.logger.info(f"开始源域预训练，共 {self.max_epoch} 个epoch，{self.max_iter} 次iteration")
         
-        for epoch in range(1, self.epochs + 1):
-            # 训练一个epoch
-            train_loss, train_acc = self._train_epoch(epoch)
-            
-            # 测试
-            if self.test_loader is not None:
-                test_loss, test_acc = self._test(epoch)
-            else:
-                test_loss, test_acc = 0.0, 0.0
-            
-            # 更新学习率
-            self.scheduler.step()
-            current_lr = self.scheduler.get_last_lr()[0]
-            
-            # 记录日志
-            self.logger.info(
-                f"Epoch [{epoch}/{self.epochs}] "
-                f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
-                f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}% | "
-                f"LR: {current_lr:.6f}"
-            )
-            
-            # 保存checkpoint
-            if epoch % self.save_interval == 0:
-                self._save_checkpoint(epoch, test_acc)
-            
-            # 保存最佳模型
-            if test_acc > self.best_acc:
-                self.best_acc = test_acc
-                self._save_checkpoint(epoch, test_acc, is_best=True)
+        iter_num = 0
+        iter_source = iter(self.train_loader)
         
-        self.logger.info(f"源域预训练完成，最佳测试准确率: {self.best_acc:.2f}%")
-    
-    def _train_epoch(self, epoch: int) -> tuple:
-        """
-        训练一个epoch
-        
-        Returns:
-            (平均loss, 准确率)
-        """
         self.netG.train()
         self.netF.train()
         self.netC.train()
         
-        loss_meter = AverageMeter("Loss")
-        acc_meter = AverageMeter("Acc")
+        # 用于存储最佳模型
+        best_netG = None
+        best_netF = None
+        best_netC = None
         
-        pbar = tqdm(
-            self.train_loader,
-            desc=f"Epoch {epoch}/{self.epochs}",
-            leave=False
-        )
+        pbar = tqdm(total=self.max_iter, desc="Source Training")
         
-        for batch_idx, (images, labels, _) in enumerate(pbar):
-            images = images.to(self.device)
+        while iter_num < self.max_iter:
+            # 获取数据
+            try:
+                inputs, labels, _ = next(iter_source)
+            except StopIteration:
+                iter_source = iter(self.train_loader)
+                inputs, labels, _ = next(iter_source)
+            
+            # 跳过 batch_size 为 1 的情况（BatchNorm 问题）
+            if inputs.size(0) == 1:
+                continue
+            
+            iter_num += 1
+            
+            # 更新学习率
+            lr_scheduler(self.optimizer, iter_num=iter_num, max_iter=self.max_iter)
+            
+            inputs = inputs.to(self.device)
             labels = labels.to(self.device)
             
             # 前向传播
-            feat = self.netG(images)
+            feat = self.netG(inputs)
             feat = self.netF(feat)
             logits = self.netC(feat)
             
+            # 计算损失（使用标签平滑）
             loss = self.criterion(logits, labels)
             
             # 反向传播
@@ -162,85 +164,92 @@ class SourceTrainer:
             loss.backward()
             self.optimizer.step()
             
-            # 计算准确率
-            pred = logits.argmax(dim=1)
-            acc = (pred == labels).float().mean().item() * 100
-            
-            # 更新meter
-            loss_meter.update(loss.item(), images.size(0))
-            acc_meter.update(acc, images.size(0))
-            
             # 更新进度条
-            pbar.set_postfix({
-                'loss': f'{loss_meter.avg:.4f}',
-                'acc': f'{acc_meter.avg:.2f}%'
-            })
+            pbar.update(1)
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+            
+            # 定期测试和保存
+            if iter_num % self.interval_iter == 0 or iter_num == self.max_iter:
+                self.netG.eval()
+                self.netF.eval()
+                self.netC.eval()
+                
+                if self.test_loader is not None:
+                    test_acc, mean_ent = self._test()
+                    
+                    self.logger.info(
+                        f"Iter [{iter_num}/{self.max_iter}] "
+                        f"Test Acc: {test_acc:.2f}%, Mean Entropy: {mean_ent:.4f}"
+                    )
+                    
+                    # 保存最佳模型
+                    if test_acc >= self.best_acc:
+                        self.best_acc = test_acc
+                        best_netG = self.netG.state_dict().copy()
+                        best_netF = self.netF.state_dict().copy()
+                        best_netC = self.netC.state_dict().copy()
+                
+                self.netG.train()
+                self.netF.train()
+                self.netC.train()
         
-        return loss_meter.avg, acc_meter.avg
+        pbar.close()
+        
+        # 保存最佳模型权重（只保存 state_dict，贴近 source.py）
+        if best_netG is not None:
+            self._save_checkpoint(best_netG, best_netF, best_netC)
+        
+        self.logger.info(f"源域预训练完成，最佳测试准确率: {self.best_acc:.2f}%")
     
-    def _test(self, epoch: int) -> tuple:
+    def _test(self) -> tuple:
         """
         测试
         
         Returns:
-            (平均loss, 准确率)
+            (准确率, 平均熵)
         """
-        self.netG.eval()
-        self.netF.eval()
-        self.netC.eval()
-        
-        loss_meter = AverageMeter("Loss")
-        acc_meter = AverageMeter("Acc")
+        all_output = []
+        all_label = []
         
         with torch.no_grad():
             for images, labels, _ in self.test_loader:
                 images = images.to(self.device)
-                labels = labels.to(self.device)
                 
                 feat = self.netG(images)
                 feat = self.netF(feat)
                 logits = self.netC(feat)
                 
-                loss = self.criterion(logits, labels)
-                
-                pred = logits.argmax(dim=1)
-                acc = (pred == labels).float().mean().item() * 100
-                
-                loss_meter.update(loss.item(), images.size(0))
-                acc_meter.update(acc, images.size(0))
+                all_output.append(logits.float().cpu())
+                all_label.append(labels.float())
         
-        return loss_meter.avg, acc_meter.avg
+        all_output = torch.cat(all_output, dim=0)
+        all_label = torch.cat(all_label, dim=0)
+        
+        # Softmax
+        all_output = nn.Softmax(dim=1)(all_output)
+        _, predict = torch.max(all_output, 1)
+        
+        # 计算准确率
+        accuracy = torch.sum(predict.float() == all_label).item() / float(all_label.size(0))
+        
+        # 计算平均熵
+        entropy = -torch.sum(all_output * torch.log(all_output + 1e-5), dim=1)
+        mean_ent = torch.mean(entropy).item()
+        
+        return accuracy * 100, mean_ent
     
     def _save_checkpoint(
         self,
-        epoch: int,
-        test_acc: float,
-        is_best: bool = False
+        netG_state: dict,
+        netF_state: dict,
+        netC_state: dict
     ) -> None:
-        """保存checkpoint"""
+        """保存模型权重（只保存 state_dict，贴近 source.py）"""
         source_domain = self.config['data']['source']
         
-        checkpoint = {
-            'epoch': epoch,
-            'netG_state_dict': self.netG.state_dict(),
-            'netF_state_dict': self.netF.state_dict(),
-            'netC_state_dict': self.netC.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'test_acc': test_acc,
-            'config': self.config
-        }
+        # 保存为三个独立文件（贴近 source.py 的 source_F.pt, source_B.pt, source_C.pt）
+        torch.save(netG_state, os.path.join(self.save_dir, f"source_{source_domain}_F.pt"))
+        torch.save(netF_state, os.path.join(self.save_dir, f"source_{source_domain}_B.pt"))
+        torch.save(netC_state, os.path.join(self.save_dir, f"source_{source_domain}_C.pt"))
         
-        if is_best:
-            save_path = os.path.join(
-                self.save_dir,
-                f"source_{source_domain}_best.pth"
-            )
-        else:
-            save_path = os.path.join(
-                self.save_dir,
-                f"source_{source_domain}_epoch{epoch}.pth"
-            )
-        
-        torch.save(checkpoint, save_path)
-        self.logger.info(f"Checkpoint 已保存: {save_path}")
+        self.logger.info(f"模型权重已保存到: {self.save_dir}")
