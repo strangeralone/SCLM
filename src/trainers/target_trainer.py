@@ -259,6 +259,17 @@ class TargetTrainer:
                     new_clip = (outputs_detach - self.logits_bank_decay * bank_logits) + clip_score
                     clip_score_sm = F.softmax(new_clip, dim=1)
                     clip_pred = new_clip.argmax(dim=1)
+                    
+                    if indices[0] == 0:  # 只打印第一个 batch 的第一个样本
+                        self.logger.info(f"debug - indices size: {indices.size()}")
+                        self.logger.info(f"debug - clip_score range: {clip_score.min():.4f} to {clip_score.max():.4f}")
+                        self.logger.info(f"debug - bank_logits range: {bank_logits.min():.4f} to {bank_logits.max():.4f}")
+                        self.logger.info(f"debug - outputs_detach range: {outputs_detach.min():.4f} to {outputs_detach.max():.4f}")
+                        self.logger.info(f"debug - new_clip range: {new_clip.min():.4f} to {new_clip.max():.4f}")
+                        self.logger.info(f"debug - clip_pred[:10]: {clip_pred[:10].tolist()}")
+                        # 检查是否有 collapse
+                        unique_preds = torch.unique(clip_pred)
+                        self.logger.info(f"debug - unique preds count in batch: {len(unique_preds)}")
                 
                 # 损失计算（严格按照原版 ProDe 顺序）
                 # 1. IIC Loss: 对齐源模型输出和 CLIP 输出
