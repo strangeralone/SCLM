@@ -23,13 +23,14 @@ class TextEncoder(nn.Module):
         self.positional_embedding = clip_model.positional_embedding
         self.ln_final = clip_model.ln_final
         self.text_projection = clip_model.text_projection
+        self.register_buffer('attn_mask', clip_model.attn_mask)
         # open_clip 没有 dtype 属性，从权重推断
         self.dtype = clip_model.ln_final.weight.dtype
     
     def forward(self, prompts: torch.Tensor, tokenized_prompts: torch.Tensor) -> torch.Tensor:
         x = prompts + self.positional_embedding.type(self.dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
+        x = self.transformer(x, attn_mask=self.attn_mask)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x).type(self.dtype)
         
