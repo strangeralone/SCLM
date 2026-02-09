@@ -1,227 +1,88 @@
 """
-CLIP 模块
-包含 Prompt Learning 和 Test-Time Adaptation 相关组件
+CLIP 模块 (Adapter for local clip library)
+适配本地 clip/custom_clip.py，并修正归一化问题。
 """
-import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from typing import List, Optional
 
-import open_clip
-
-# 项目根目录
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-class TextEncoder(nn.Module):
-    """CLIP 文本编码器包装"""
-    
-    def __init__(self, clip_model):
-        super().__init__()
-        self.transformer = clip_model.transformer
-        self.positional_embedding = clip_model.positional_embedding
-        self.ln_final = clip_model.ln_final
-        self.text_projection = clip_model.text_projection
-        self.register_buffer('attn_mask', clip_model.attn_mask)
-        # open_clip 没有 dtype 属性，从权重推断
-        self.dtype = clip_model.ln_final.weight.dtype
-    
-    def forward(self, prompts: torch.Tensor, tokenized_prompts: torch.Tensor) -> torch.Tensor:
-        x = prompts + self.positional_embedding.type(self.dtype)
-        # x : [N, L, D]
-        # open_clip Transformer 默认为 batch_first=True
-        x = self.transformer(x, attn_mask=self.attn_mask)
-        # x : [N, L, D]
-        x = self.ln_final(x).type(self.dtype)
-        
-        # 取 EOT token 的特征
-        # tokenized_prompts shape: [N, L] -> index for each item in N
-        x = x[torch.arange(x.shape[0]), tokenized_prompts.argmax(dim=-1)] @ self.text_projection
-        return x
-
-
-class PromptLearner(nn.Module):
-    """
-    可学习的 Prompt 模块（CoOp 风格）
-    
-    将 "a photo of a [CLASS]" 中的 "a photo of a" 替换为可学习的 token
-    """
-    
-    def __init__(
-        self,
-        clip_model,
-        classnames: List[str],
-        n_ctx: int = 4,
-        ctx_init: str = "a_photo_of_a",
-        device: torch.device = None
-    ):
-        super().__init__()
-        
-        n_cls = len(classnames)
-        self.n_cls = n_cls
-        self.n_ctx = n_ctx
-        
-        # open_clip 没有 dtype 属性，从权重推断
-        dtype = clip_model.ln_final.weight.dtype
-        self.dtype = dtype
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        ctx_dim = clip_model.ln_final.weight.shape[0]
-        self.ctx_dim = ctx_dim
-        
-        # 初始化 context vectors
-        if ctx_init:
-            ctx_init = ctx_init.replace("_", " ")
-            n_ctx = len(ctx_init.split(" "))
-            self.n_ctx = n_ctx
-            
-            # 用 CLIP tokenizer 编码初始 prompt
-            prompt = open_clip.tokenize(ctx_init).to(self.device)
-            with torch.no_grad():
-                embedding = clip_model.token_embedding(prompt).type(dtype)
-            ctx_vectors = embedding[0, 1:1 + n_ctx, :]
-            prompt_prefix = ctx_init
-        else:
-            ctx_vectors = torch.empty(n_ctx, ctx_dim, dtype=dtype)
-            nn.init.normal_(ctx_vectors, std=0.02)
-            prompt_prefix = " ".join(["X"] * n_ctx)
-        
-        self.prompt_prefix = prompt_prefix
-        
-        # 保存初始状态用于 reset
-        self.ctx_init_state = ctx_vectors.detach().clone()
-        self.ctx = nn.Parameter(ctx_vectors)  # 可学习参数
-        
-        # 处理类别名
-        classnames = [name.replace("_", " ") for name in classnames]
-        prompts = [prompt_prefix + " " + name + "." for name in classnames]
-        
-        # Tokenize
-        tokenized_prompts = open_clip.tokenize(prompts).to(self.device)
-        with torch.no_grad():
-            embedding = clip_model.token_embedding(tokenized_prompts).type(dtype)
-        
-        # 保存 token embedding 的前缀和后缀
-        self.register_buffer("token_prefix", embedding[:, :1, :])  # SOS
-        self.register_buffer("token_suffix", embedding[:, 1 + n_ctx:, :])  # CLS + EOS
-        
-        self.tokenized_prompts = tokenized_prompts
-        self.classnames = classnames
-        self.clip_model = clip_model
-    
-    def reset(self):
-        """重置 prompt 到初始状态"""
-        self.ctx.data.copy_(self.ctx_init_state)
-    
-    def forward(self) -> torch.Tensor:
-        """
-        生成完整的 prompt embeddings
-        
-        Returns:
-            prompts: [n_cls, n_tokens, ctx_dim]
-        """
-        ctx = self.ctx
-        if ctx.dim() == 2:
-            ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
-        
-        prefix = self.token_prefix  # [n_cls, 1, dim]
-        suffix = self.token_suffix  # [n_cls, *, dim]
-        
-        prompts = torch.cat([prefix, ctx, suffix], dim=1)
-        return prompts
-
+# Import from local clip library
+import clip.custom_clip as custom_clip
+from src.utils.losses import IID_loss
 
 class ClipTestTimeTuning(nn.Module):
     """
-    CLIP Test-Time Tuning 模块
-    
-    在测试时微调 prompt，使 CLIP 输出与源模型对齐
+    Wrapper around clip.custom_clip.ClipTestTimeTuning
+    Adds normalization correction (ImageNet -> CLIP).
     """
-    
     def __init__(
         self,
+        device: torch.device,
         classnames: List[str],
-        arch: str = "ViT-B-32",
-        n_ctx: int = 4,
-        ctx_init: str = "a_photo_of_a",
-        device: torch.device = None
+        batch_size: int = None,
+        arch: str = "ViT-B/32",
+        n_ctx: int = 16,
+        ctx_init: str = None,
+        ctx_position: str = 'end',
+        learned_cls: bool = False
     ):
         super().__init__()
         
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # 加载 CLIP 模型
-        vlm_cache_dir = os.path.join(PROJECT_ROOT, 'vlm')
-        os.makedirs(vlm_cache_dir, exist_ok=True)
-        
-        clip_model, _, _ = open_clip.create_model_and_transforms(
-            arch,
-            pretrained='openai',
-            cache_dir=vlm_cache_dir
-        )
-        clip_model = clip_model.to(self.device)
-        
-        self.image_encoder = clip_model.visual
-        self.text_encoder = TextEncoder(clip_model)
-        self.logit_scale = clip_model.logit_scale.data
-        
-        # Prompt learner
-        self.prompt_learner = PromptLearner(
-            clip_model, classnames, n_ctx, ctx_init, self.device
+        # Initialize internal CoOp model from local clip library
+        self.model = custom_clip.ClipTestTimeTuning(
+            device=device,
+            classnames=classnames,
+            batch_size=batch_size,
+            criterion='cosine', # Default in custom_clip
+            arch=arch,
+            n_ctx=n_ctx,
+            ctx_init=ctx_init,
+            ctx_position=ctx_position,
+            learned_cls=learned_cls
         )
         
-        # 冻结除 prompt_learner 之外的所有参数
-        for name, param in self.named_parameters():
-            if "prompt_learner" not in name:
-                param.requires_grad_(False)
-    
+        # Freeze backbone weights explicitly (ImageEncoder & TextEncoder)
+        # custom_clip.ClipTestTimeTuning uses self.image_encoder and self.text_encoder
+        for param in self.model.image_encoder.parameters():
+            param.requires_grad = False
+        for param in self.model.text_encoder.parameters():
+            param.requires_grad = False
+            
+        self.dtype = self.model.dtype
+
     @property
-    def dtype(self):
-        return self.image_encoder.conv1.weight.dtype
-    
-    def reset(self):
-        """重置 prompt 到初始状态"""
-        self.prompt_learner.reset()
-    
-    def get_text_features(self) -> torch.Tensor:
-        """获取文本特征"""
-        prompts = self.prompt_learner()
-        tokenized_prompts = self.prompt_learner.tokenized_prompts
-        text_features = self.text_encoder(prompts, tokenized_prompts)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        return text_features
-    
+    def prompt_learner(self):
+        # Expose prompt_learner for external access/optimization
+        return self.model.prompt_learner
+
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
-        前向传播
         Args:
-            images: 图像张量 [B, C, H, W] (ImageNet Normalized)
+            images: [B, C, H, W] (ImageNet Normalized)
         Returns:
-            logits: CLIP Logits [B, n_cls]
+            logits: [B, n_cls]
         """
-        # 1. 反归一化 (ImageNet) -> [0, 1]
+        # 1. Normalization Correction: ImageNet -> CLIP
+        # ImageNet
         mean_in = torch.tensor([0.485, 0.456, 0.406], device=images.device).view(1, 3, 1, 1)
         std_in = torch.tensor([0.229, 0.224, 0.225], device=images.device).view(1, 3, 1, 1)
-        x = images * std_in + mean_in
-        
-        # 2. 重新归一化 (CLIP)
+        # CLIP
         mean_out = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=images.device).view(1, 3, 1, 1)
         std_out = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=images.device).view(1, 3, 1, 1)
+        
+        # De-normalize (ImageNet) -> [0, 1]
+        x = images * std_in + mean_in
+        # Re-normalize (CLIP)
         x = (x - mean_out) / std_out
         
-        # 3. CLIP Inference
-        with torch.no_grad():
-            image_features = self.image_encoder(x.type(self.dtype))
-        
-        text_features = self.get_text_features()
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        
-        logit_scale = self.logit_scale.exp()
-        logits = logit_scale * image_features @ text_features.t()
+        # 2. Inference using internal model
+        # inference returns (logits, text_features)
+        logits, _ = self.model.inference(x)
         
         return logits
 
+# Re-export PromptLearner and TextEncoder for compatibility if needed elsewhere
+# But mostly ClipTestTimeTuning is checked.
 
 def test_time_tuning(
     model: ClipTestTimeTuning,
@@ -231,40 +92,36 @@ def test_time_tuning(
     tta_steps: int = 1
 ) -> torch.Tensor:
     """
-    Test-Time Tuning
-    
-    用 IIC loss 微调 prompt，使 CLIP 输出与目标输出对齐
-    
+    Test-Time Tuning for CLIP Prompt
     Args:
-        model: ClipTestTimeTuning 模型
-        images: 输入图像
-        optimizer: prompt 优化器
-        target_output: 目标输出（源模型的 logits）
-        tta_steps: TTA 步数
-        
+        model: ClipTestTimeTuning instance
+        images: Input images [B, C, H, W]
+        optimizer: Optimizer for prompt learner
+        target_output: Source model output logits [B, C]
+        tta_steps: Number of TTA steps
     Returns:
-        output: TTA 后的 CLIP logits
+        final_logits: [B, C]
     """
-    from ..utils.losses import IID_loss
+    # Source model probability
+    target_prob = torch.softmax(target_output, dim=1)
     
-    # 将目标输出转为 softmax
-    target_output = target_output.to(images.device)
-    target_softmax = F.softmax(target_output, dim=1)
-    
-    model.train()
+    # TTA Loop
     for _ in range(tta_steps):
-        output_logits = model(images)
-        output = F.softmax(output_logits, dim=1)
+        # Forward pass (Normalization is handled inside model.forward)
+        logits = model(images)
+        prob = torch.softmax(logits, dim=1)
         
-        iic_loss = IID_loss(output, target_softmax)
+        # Loss: IIC / Mutual Information Maximization with Source
+        # Note: IID_loss input order (output, target). 
+        # Minimizing IID loss = Maximizing Mutual Information
+        loss = IID_loss(prob, target_prob)
         
         optimizer.zero_grad()
-        iic_loss.backward()
+        loss.backward()
         optimizer.step()
     
-    # TTA 完成后，切换到 eval 模式，返回最终 logits
-    model.eval()
+    # Final forward to get updated logits
     with torch.no_grad():
-        output_logits = model(images)
-    
-    return output_logits
+        final_logits = model(images)
+        
+    return final_logits
