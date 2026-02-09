@@ -70,19 +70,21 @@ def entropy_loss(probs: torch.Tensor, epsilon: float = 1e-10) -> torch.Tensor:
     return torch.mean(entropy)
 
 
-def diversity_loss(probs: torch.Tensor, epsilon: float = 1e-10) -> torch.Tensor:
+def diversity_loss(probs: torch.Tensor, epsilon: float = 1e-5) -> torch.Tensor:
     """
     多样性损失（防止类别坍塌）
     
-    希望 batch 内的预测分布均匀
+    返回 batch 平均概率的熵值（正值）
+    用法：total_loss = ... - weight * diversity_loss（减去熵以鼓励均匀分布）
     
     Args:
         probs: 预测概率 [B, C]
         epsilon: 数值稳定参数
         
     Returns:
-        负熵（越小越多样）
+        正的熵值（越大越多样）
     """
     mean_probs = probs.mean(dim=0)
-    diversity = torch.sum(mean_probs * torch.log(mean_probs + epsilon))
-    return diversity
+    # 返回正的熵值，与原版 ProDe 一致
+    gentropy = torch.sum(-mean_probs * torch.log(mean_probs + epsilon))
+    return gentropy

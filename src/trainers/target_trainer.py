@@ -241,7 +241,9 @@ class TargetTrainer:
                 
                 # 计算修正后的 CLIP 分数
                 with torch.no_grad():
-                    new_clip = (outputs_detach - self.logits_bank_decay * self.logits_bank[indices]) + clip_score
+                    # 确保 logits_bank 在正确设备上
+                    bank_logits = self.logits_bank[indices].to(self.device)
+                    new_clip = (outputs_detach - self.logits_bank_decay * bank_logits) + clip_score
                     clip_score_sm = F.softmax(new_clip, dim=1)
                     clip_pred = new_clip.argmax(dim=1)
                 

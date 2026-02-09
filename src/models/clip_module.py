@@ -227,31 +227,32 @@ def test_time_tuning(
         model: ClipTestTimeTuning 模型
         images: 输入图像
         optimizer: prompt 优化器
-        target_output: 目标输出（源模型的 softmax 输出）
+        target_output: 目标输出（源模型的 logits）
         tta_steps: TTA 步数
         
     Returns:
-        output: 微调后的 CLIP 输出
+        output: TTA 后的 CLIP logits
     """
-    from .losses import IID_loss
+    from ..utils.losses import IID_loss
     
+    # 将目标输出转为 softmax
     target_output = target_output.to(images.device)
-    target_output = F.softmax(target_output, dim=1)
+    target_softmax = F.softmax(target_output, dim=1)
     
     model.train()
     for _ in range(tta_steps):
         output_logits = model(images)
         output = F.softmax(output_logits, dim=1)
         
-        iic_loss = IID_loss(output, target_output)
+        iic_loss = IID_loss(output, target_softmax)
         
         optimizer.zero_grad()
         iic_loss.backward()
         optimizer.step()
     
-    # 返回最终输出
+    # TTA 完成后，切换到 eval 模式，返回最终 logits
     model.eval()
     with torch.no_grad():
-        output = model(images)
+        output_logits = model(images)
     
-    return output
+    return output_logits
