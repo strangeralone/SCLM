@@ -14,7 +14,7 @@ import logging
 from copy import deepcopy
 
 from ..utils.logger import AverageMeter
-from ..utils.losses import IID_loss, entropy_loss, diversity_loss
+from ..utils.losses import IID_loss, entropy_loss
 from ..models.clip_module import ClipTestTimeTuning, test_time_tuning
 
 
@@ -247,22 +247,19 @@ class TargetTrainer:
                     clip_score_sm = F.softmax(new_clip, dim=1)
                     clip_pred = new_clip.argmax(dim=1)
                 
-                # 损失计算
+                # 损失计算（严格按照原版 ProDe 顺序）
                 # 1. IIC Loss: 对齐源模型输出和 CLIP 输出
                 iic_loss = IID_loss(softmax_out, clip_score_sm)
+                classifier_loss = self.iic_par * iic_loss
                 
-                # 2. CE Loss: 用 CLIP 预测作为伪标签
+                # 2. 多样性损失（gentropy）
+                msoftmax = softmax_out.mean(dim=0)
+                gentropy_loss = torch.sum(-msoftmax * torch.log(msoftmax + self.epsilon))
+                classifier_loss = classifier_loss - self.div_weight * gentropy_loss
+                
+                # 3. CE Loss: 用 CLIP 预测作为伪标签（最后加）
                 ce_loss = F.cross_entropy(outputs, clip_pred)
-                
-                # 3. 多样性损失
-                div_loss = diversity_loss(softmax_out, self.epsilon)
-                
-                # 总损失
-                total_loss = (
-                    self.iic_par * iic_loss +
-                    self.gent_par * ce_loss -
-                    self.div_weight * div_loss
-                )
+                total_loss = self.gent_par * ce_loss + classifier_loss
                 
                 # 反向传播
                 self.optimizer.zero_grad()
@@ -273,7 +270,7 @@ class TargetTrainer:
                 loss_meter.update(total_loss.item(), images.size(0))
                 iic_meter.update(iic_loss.item(), images.size(0))
                 ce_meter.update(ce_loss.item(), images.size(0))
-                div_meter.update(div_loss.item(), images.size(0))
+                div_meter.update(gentropy_loss.item(), images.size(0))
                 
                 pbar.set_postfix({
                     'loss': f'{loss_meter.avg:.4f}',
@@ -285,7 +282,7 @@ class TargetTrainer:
             
             self.logger.info(
                 f"Epoch [{epoch}/{self.max_epoch}] "
-                f"Loss: {loss_meter.avg:.4f} (IIC: {iic_meter.avg:.4f}, CE: {ce_meter.avg:.4f}, Div: {div_meter.avg:.4f}) | "
+                f"Loss: {loss_meter.avg:.4f} (IIC: {iic_meter.avg:.4f}, CE: {ce_meter.avg:.4f}, Gentropy: {div_meter.avg:.4f}) | "
                 f"Target Acc: {acc:.2f}%"
             )
             
