@@ -29,12 +29,14 @@ class TextEncoder(nn.Module):
     
     def forward(self, prompts: torch.Tensor, tokenized_prompts: torch.Tensor) -> torch.Tensor:
         x = prompts + self.positional_embedding.type(self.dtype)
-        x = x.permute(1, 0, 2)  # NLD -> LND
+        # x : [N, L, D]
+        # open_clip Transformer 默认为 batch_first=True
         x = self.transformer(x, attn_mask=self.attn_mask)
-        x = x.permute(1, 0, 2)  # LND -> NLD
+        # x : [N, L, D]
         x = self.ln_final(x).type(self.dtype)
         
         # 取 EOT token 的特征
+        # tokenized_prompts shape: [N, L] -> index for each item in N
         x = x[torch.arange(x.shape[0]), tokenized_prompts.argmax(dim=-1)] @ self.text_projection
         return x
 
