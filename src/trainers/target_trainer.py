@@ -105,12 +105,25 @@ class TargetTrainer:
         self.logits_bank = None
     
     def _get_classnames(self) -> List[str]:
-        """获取类别名称"""
+        """获取类别名称（从配置或文件加载）"""
+        # 优先从配置读取
         classnames = self.config.get('data', {}).get('classnames', None)
-        if classnames is None:
-            # 默认使用数字作为类别名
-            classnames = [str(i) for i in range(self.num_classes)]
-        return classnames
+        if classnames is not None:
+            return classnames
+        
+        # 尝试从类名文件加载
+        data_root = self.config.get('data', {}).get('root', 'data/officehome')
+        classnames_file = os.path.join(data_root, 'classname.txt')
+        
+        if os.path.exists(classnames_file):
+            with open(classnames_file, 'r') as f:
+                classnames = [line.strip() for line in f if line.strip()]
+            self.logger.info(f"从 {classnames_file} 加载了 {len(classnames)} 个类名")
+            return classnames
+        
+        # 默认使用数字（不推荐，CLIP 无法理解语义）
+        self.logger.warning("未找到类名文件，使用数字作为类名（CLIP 效果会很差）")
+        return [str(i) for i in range(self.num_classes)]
     
     def _init_optimizers(self, train_cfg: Dict):
         """初始化优化器"""

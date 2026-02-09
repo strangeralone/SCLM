@@ -33,7 +33,7 @@ train:
       logits_bank_decay: 0.1
       
       clip:
-        arch: "ViT-B-32"
+        arch: "ViT-B/32"
         n_ctx: 4
         ctx_init: "a_photo_of_a"
         lr_decay: 0.1

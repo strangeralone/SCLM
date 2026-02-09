@@ -54,7 +54,7 @@ train:
       
       # CLIP 配置
       clip:
-        arch: "ViT-B-32"           # CLIP 架构
+        arch: "ViT-B/32"           # CLIP 架构 (OpenAI 格式)
         n_ctx: 4                   # Context token 数量
         ctx_init: "a_photo_of_a"   # Prompt 初始化
         lr_decay: 0.1              # CLIP prompt 学习率衰减
