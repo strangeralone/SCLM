@@ -192,18 +192,27 @@ class ClipTestTimeTuning(nn.Module):
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
         前向传播
-        
         Args:
-            images: 输入图像 [B, C, H, W]
-            
+            images: 图像张量 [B, C, H, W] (ImageNet Normalized)
         Returns:
-            logits: CLIP 分类 logits [B, n_cls]
+            logits: CLIP Logits [B, n_cls]
         """
+        # 1. 反归一化 (ImageNet) -> [0, 1]
+        mean_in = torch.tensor([0.485, 0.456, 0.406], device=images.device).view(1, 3, 1, 1)
+        std_in = torch.tensor([0.229, 0.224, 0.225], device=images.device).view(1, 3, 1, 1)
+        x = images * std_in + mean_in
+        
+        # 2. 重新归一化 (CLIP)
+        mean_out = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=images.device).view(1, 3, 1, 1)
+        std_out = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=images.device).view(1, 3, 1, 1)
+        x = (x - mean_out) / std_out
+        
+        # 3. CLIP Inference
         with torch.no_grad():
-            image_features = self.image_encoder(images.type(self.dtype))
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            image_features = self.image_encoder(x.type(self.dtype))
         
         text_features = self.get_text_features()
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         
         logit_scale = self.logit_scale.exp()
         logits = logit_scale * image_features @ text_features.t()

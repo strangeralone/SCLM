@@ -223,7 +223,7 @@ class TargetTrainer:
             
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{self.max_epoch}", leave=False)
             
-            for images, _, indices in pbar:
+            for images, labels, indices in pbar:
                 if images.size(0) == 1:
                     continue
                 
@@ -261,6 +261,9 @@ class TargetTrainer:
                     clip_pred = new_clip.argmax(dim=1)
                     
                     if indices[0] == 0:  # 只打印第一个 batch 的第一个样本
+                        # Debug: Zero-shot Accuracy (Monitor if CLIP is working)
+                        gt_acc = (clip_pred == labels.to(self.device)).float().mean().item()
+                        self.logger.info(f"debug - TARGET BATCH ACC (ProDe Logic): {gt_acc*100:.2f}%")
                         self.logger.info(f"debug - indices size: {indices.size()}")
                         self.logger.info(f"debug - clip_score range: {clip_score.min():.4f} to {clip_score.max():.4f}")
                         self.logger.info(f"debug - bank_logits range: {bank_logits.min():.4f} to {bank_logits.max():.4f}")
