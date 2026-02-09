@@ -23,7 +23,8 @@ class TextEncoder(nn.Module):
         self.positional_embedding = clip_model.positional_embedding
         self.ln_final = clip_model.ln_final
         self.text_projection = clip_model.text_projection
-        self.dtype = clip_model.dtype
+        # open_clip 没有 dtype 属性，从权重推断
+        self.dtype = clip_model.ln_final.weight.dtype
     
     def forward(self, prompts: torch.Tensor, tokenized_prompts: torch.Tensor) -> torch.Tensor:
         x = prompts + self.positional_embedding.type(self.dtype)
@@ -58,7 +59,8 @@ class PromptLearner(nn.Module):
         self.n_cls = n_cls
         self.n_ctx = n_ctx
         
-        dtype = clip_model.dtype
+        # open_clip 没有 dtype 属性，从权重推断
+        dtype = clip_model.ln_final.weight.dtype
         self.dtype = dtype
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         

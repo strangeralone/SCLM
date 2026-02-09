@@ -78,7 +78,7 @@ train:
 
 # ============== 设备配置 ==============
 device:
-  type: "mps"                      # cuda, mps, cpu
+  type: "cuda"                      # cuda, mps, cpu
   gpu_id: 0                        # 仅cuda时使用
 
 # ============== 日志配置 ==============

@@ -40,5 +40,5 @@ train:
 
 # ============== 设备配置 ==============
 device:
-  type: "mps"
+  type: "cuda"
   gpu_id: 0
