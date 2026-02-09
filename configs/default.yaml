@@ -1,9 +1,9 @@
 # =========================================================
-# SFDA 扰动一致性实验 - 默认公共配置
+# SFDA ProDe 风格实验 - 默认配置
 # =========================================================
 # 此文件包含所有默认配置项
-# 实验时创建单独的配置文件（如 art2clipart.yaml）覆盖需要修改的项
-# 用法: python main.py -c configs/art2clipart.yaml
+# 实验时创建单独的配置文件（如 art2clipart_prode.yaml）覆盖需要修改的项
+# 用法: python main.py -c configs/art2clipart_prode.yaml
 # =========================================================
 
 # ============== 数据配置 ==============
@@ -14,6 +14,8 @@ data:
   num_classes: 65
   num_workers: 4
   image_size: 224
+  # 类别名称（用于 CLIP prompt）
+  classnames: null                 # null 则使用数字，可设为类名列表
 
 # ============== 模型配置 ==============
 model:
@@ -32,65 +34,51 @@ train:
     lr_backbone: 0.001             # backbone学习率（较小）
     label_smooth_epsilon: 0.1      # 标签平滑参数
 
-  # 目标域适应
+  # 目标域适应 (ProDe 风格)
   target:
-    epochs: 15
+    epochs: 30                     # ProDe 默认 30 epochs
     batch_size: 64
-    lr: 0.001
-    lr_backbone: 0.0001
+    lr: 0.005                      # ProDe 默认 5e-3
+    lr_backbone: 0.0005
     momentum: 0.9
-    weight_decay: 0.0005
+    weight_decay: 0.001
     
-    # SHOT 超参数
-    ent_weight: 1.0                # 熵最小化权重
-    div_weight: 1.0                # 多样性权重
-    cls_weight: 0.3                # 伪标签交叉熵权重
-    
-    # 扰动一致性过滤 (Self-Guidance inspired)
-    perturbation:
-      enabled: false               # 是否启用扰动一致性过滤
-      noise_scale: 0.1             # 高斯噪声标准差
-      num_perturbations: 10        # 扰动次数
-      threshold: 0.8               # 一致性阈值（硬过滤时使用）
-      soft_weight: true            # true=软加权, false=硬过滤
-    
-    # CLIP 拓扑修正 (基于 CLIP 视觉特征的几何结构修正伪标签)
-    clip_rectification:
-      enabled: false               # 是否启用 CLIP 拓扑修正
-      tau: 0.07                    # 温度系数（越小邻居权重越集中，推荐 0.05-0.1）
-      alpha: 0.8                   # 邻居 vs 自身平衡（推荐 0.7-0.9）
-      num_iters: 5                 # 标签传播迭代次数（推荐 3-5）
+    # ProDe 核心超参数
+    prode:
+      gent_par: 0.4                # CE Loss 权重
+      iic_par: 1.3                 # IIC Loss 权重
+      div_weight: 1.0              # Diversity Loss 权重
+      epsilon: 1.0e-5              # 数值稳定
+      tta_steps: 1                 # TTA 步数
+      logits_bank_decay: 0.1       # Logits Bank 衰减系数
+      
+      # CLIP 配置
+      clip:
+        arch: "ViT-B-32"           # CLIP 架构
+        n_ctx: 4                   # Context token 数量
+        ctx_init: "a_photo_of_a"   # Prompt 初始化
+        lr_decay: 0.1              # CLIP prompt 学习率衰减
 
-  # Adapter-based 目标域适应 (One-Step Flow)
+  # Adapter-based 目标域适应 (保留备用)
   adapter:
     epochs: 15
     batch_size: 32
     lr: 0.001
     weight_decay: 0.0001
-    
-    # Adapter 网络结构
-    hidden_dim: 512                # 隐藏层维度
-    num_layers: 2                  # MLP层数
+    hidden_dim: 512
+    num_layers: 2
     dropout: 0.1
-    
-    # Loss 权重
-    align_weight: 1.0              # Huber 对齐损失权重
-    div_weight: 0.1                # 多样性正则权重
-    ent_weight: 0.1                # 熵最小化权重
-    
-    # Huber Loss 参数
-    huber_delta: 1.0               # Huber Loss 的 delta
-    
-    # 置信度过滤
-    confidence_threshold: 0.7      # 伪标签置信度阈值 (余弦相似度)
-    
-    # 动态原型更新
-    use_dynamic_prototype: true    # 是否启用动态原型
-    prototype_momentum: 0.9        # EMA 动量 (0.9~0.99)
+    align_weight: 1.0
+    div_weight: 0.1
+    ent_weight: 0.1
+    huber_delta: 1.0
+    confidence_threshold: 0.7
+    use_dynamic_prototype: true
+    prototype_momentum: 0.9
 
 # ============== 设备配置 ==============
 device:
-  type: "cuda"                      # cuda, mps, cpu
+  type: "mps"                      # cuda, mps, cpu
   gpu_id: 0                        # 仅cuda时使用
 
 # ============== 日志配置 ==============

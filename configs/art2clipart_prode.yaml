@@ -1,0 +1,44 @@
+# =========================================================
+# Art -> Clipart 实验配置 (ProDe 风格)
+# =========================================================
+# 继承 default.yaml，只覆盖特定配置
+# 用法: python main.py -c configs/art2clipart_prode.yaml
+# =========================================================
+
+# ============== 数据配置 ==============
+data:
+  root: "data/officehome"
+  source: "Art"
+  target: "Clipart"
+  num_classes: 65
+  num_workers: 4
+  image_size: 224
+
+# ============== 训练配置 ==============
+train:
+  target:
+    epochs: 30
+    batch_size: 64
+    lr: 0.005
+    lr_backbone: 0.0005
+    momentum: 0.9
+    weight_decay: 0.001
+    
+    prode:
+      gent_par: 0.4
+      iic_par: 1.3
+      div_weight: 1.0
+      epsilon: 1.0e-5
+      tta_steps: 1
+      logits_bank_decay: 0.1
+      
+      clip:
+        arch: "ViT-B-32"
+        n_ctx: 4
+        ctx_init: "a_photo_of_a"
+        lr_decay: 0.1
+
+# ============== 设备配置 ==============
+device:
+  type: "mps"
+  gpu_id: 0
