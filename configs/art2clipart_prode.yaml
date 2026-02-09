@@ -30,7 +30,7 @@ train:
       div_weight: 1.0
       epsilon: 1.0e-5
       tta_steps: 1
-      logits_bank_decay: 0.1
+      logits_bank_decay: 1.0
       
       clip:
         arch: "ViT-B/32"

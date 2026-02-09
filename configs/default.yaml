@@ -50,7 +50,7 @@ train:
       div_weight: 1.0              # Diversity Loss 权重
       epsilon: 1.0e-5              # 数值稳定
       tta_steps: 1                 # TTA 步数
-      logits_bank_decay: 0.1       # Logits Bank 衰减系数
+      logits_bank_decay: 1.0       # 与原版 ProDe 一致
       
       # CLIP 配置
       clip:

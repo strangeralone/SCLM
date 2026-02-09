@@ -172,12 +172,25 @@ class TargetTrainer:
         self.logger.info("CLIP 模块初始化完成")
     
     def _init_logits_bank(self):
-        """初始化 Logits Bank（与 ProDe 一致：随机初始化）"""
-        self.logger.info("初始化 Logits Bank（随机初始化）...")
+        """初始化 Logits Bank（用源模型预测，与原版 ProDe 一致）"""
+        self.logger.info("初始化 Logits Bank（用源模型预测）...")
         
         num_samples = len(self.train_loader.dataset)
-        # 与 ProDe 一致：使用 torch.randn() 随机初始化
-        self.logits_bank = torch.randn(num_samples, self.num_classes).to(self.device)
+        self.logits_bank = torch.zeros(num_samples, self.num_classes).to(self.device)
+        
+        self.netG.eval()
+        self.netF.eval()
+        self.netC.eval()
+        
+        with torch.no_grad():
+            for images, _, indices in tqdm(self.train_loader, desc="Building logits bank", leave=False):
+                images = images.to(self.device)
+                
+                feat = self.netG(images)
+                feat = self.netF(feat)
+                logits = self.netC(feat)
+                
+                self.logits_bank[indices] = logits.detach()
         
         self.logger.info(f"Logits Bank 初始化完成，形状: {self.logits_bank.shape}")
     
