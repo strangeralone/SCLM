@@ -126,11 +126,11 @@ class TargetTrainer:
         return [str(i) for i in range(self.num_classes)]
     
     def _init_optimizers(self, train_cfg: Dict):
-        """初始化优化器"""
-        # 源模型优化器
+        """初始化优化器（与 ProDe 一致：所有参数使用相同 LR）"""
+        # 源模型优化器 - 所有参数使用相同学习率
         param_group = []
         for name, param in self.netG.named_parameters():
-            param_group.append({'params': param, 'lr': self.lr_backbone})
+            param_group.append({'params': param, 'lr': self.lr})
         for name, param in self.netF.named_parameters():
             param_group.append({'params': param, 'lr': self.lr})
         for name, param in self.netC.named_parameters():
@@ -172,25 +172,12 @@ class TargetTrainer:
         self.logger.info("CLIP 模块初始化完成")
     
     def _init_logits_bank(self):
-        """初始化 Logits Bank"""
-        self.logger.info("初始化 Logits Bank...")
+        """初始化 Logits Bank（与 ProDe 一致：随机初始化）"""
+        self.logger.info("初始化 Logits Bank（随机初始化）...")
         
         num_samples = len(self.train_loader.dataset)
-        self.logits_bank = torch.zeros(num_samples, self.num_classes).to(self.device)
-        
-        self.netG.eval()
-        self.netF.eval()
-        self.netC.eval()
-        
-        with torch.no_grad():
-            for images, _, indices in tqdm(self.train_loader, desc="Building logits bank", leave=False):
-                images = images.to(self.device)
-                
-                feat = self.netG(images)
-                feat = self.netF(feat)
-                logits = self.netC(feat)
-                
-                self.logits_bank[indices] = logits.detach()
+        # 与 ProDe 一致：使用 torch.randn() 随机初始化
+        self.logits_bank = torch.randn(num_samples, self.num_classes).to(self.device)
         
         self.logger.info(f"Logits Bank 初始化完成，形状: {self.logits_bank.shape}")
     
