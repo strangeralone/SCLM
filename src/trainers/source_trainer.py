@@ -248,8 +248,8 @@ class SourceTrainer:
         source_domain = self.config['data']['source']
         
         # 保存为三个独立文件（贴近 source.py 的 source_F.pt, source_B.pt, source_C.pt）
-        torch.save(netG_state, os.path.join(self.save_dir, f"source_{source_domain}_F.pt"))
-        torch.save(netF_state, os.path.join(self.save_dir, f"source_{source_domain}_B.pt"))
+        torch.save(netG_state, os.path.join(self.save_dir, f"source_{source_domain}_G.pt"))
+        torch.save(netF_state, os.path.join(self.save_dir, f"source_{source_domain}_F.pt"))
         torch.save(netC_state, os.path.join(self.save_dir, f"source_{source_domain}_C.pt"))
         
         self.logger.info(f"模型权重已保存到: {self.save_dir}")
