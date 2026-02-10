@@ -190,18 +190,12 @@ def run_target_adaptation(config: dict, logger, device: torch.device, resume: st
     # 创建模型
     netG, netF, netC = create_split_models(config)
     
-    # 加载源域预训练权重
+    # 加载checkpoints权重
     if resume:
         checkpoint_path = resume
-    else:
-        checkpoint_path = os.path.join(
-            config['checkpoint']['save_dir'],
-            f"source_{source}_best.pth"
-        )
-    
+
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        
         # 兼容旧版本checkpoint (如果之前的key是 backbone., etc，现在可能是 netG_state_dict)
         # 假设新的SourceTrainer保存的是 netG_state_dict, netF_state_dict, netC_state_dict
         if 'netG_state_dict' in checkpoint:
@@ -209,20 +203,15 @@ def run_target_adaptation(config: dict, logger, device: torch.device, resume: st
             netF.load_state_dict(checkpoint['netF_state_dict'])
             netC.load_state_dict(checkpoint['netC_state_dict'])
             logger.info(f"已加载源域预训练权重 (New Format): {checkpoint_path}")
-        elif 'model_state_dict' in checkpoint:
-            # 尝试从model_state_dict加载 (旧或者FullModel)
-            # FullModel key: backbone.xxx, bottleneck.xxx, classifier.xxx
-            # We need to map them back to netG, netF, netC if they are separate
-            state_dict = checkpoint['model_state_dict']
-            netG.load_state_dict({k.replace('backbone.', ''): v for k, v in state_dict.items() if k.startswith('backbone.')})
-            netF.load_state_dict({k.replace('bottleneck.', ''): v for k, v in state_dict.items() if k.startswith('bottleneck.')})
-            netC.load_state_dict({k.replace('classifier.', ''): v for k, v in state_dict.items() if k.startswith('classifier.')})
-            logger.info(f"已加载源域预训练权重 (Old Format): {checkpoint_path}")
         else:
              logger.warning(f"无法识别checkpoint格式: {checkpoint_path}")
              
     else:
-        logger.warning(f"未找到源域预训练权重: {checkpoint_path}，使用随机初始化")
+        checkpoint_path = config['checkpoint']['save_dir']
+        source_domain = config['data']['source']
+        netG.load_state_dict(torch.load(os.path.join(checkpoint_path, f'source_{source_domain}_G.pt')))
+        netF.load_state_dict(torch.load(os.path.join(checkpoint_path, f'source_{source_domain}_F.pt')))
+        netC.load_state_dict(torch.load(os.path.join(checkpoint_path, f'source_{source_domain}_C.pt')))
     
     netG = netG.to(device)
     netF = netF.to(device)

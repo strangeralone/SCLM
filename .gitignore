@@ -1,6 +1,11 @@
 scripts/
 checkpoints/
-/data/
+# 允许追踪 data 文件夹本身，但默认忽略其下所有内容
+/data/*
+# 重新包含 data 文件夹下的所有 .py 文件
+!/data/*.py
+# 显式排除 data 文件夹下的所有子文件夹
+/data/*/
 logs/
 __pycache__/
 .DS_Store
