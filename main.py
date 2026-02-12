@@ -193,8 +193,10 @@ def run_target_adaptation(config: dict, logger, device: torch.device, resume: st
     # 加载checkpoints权重
     if resume:
         checkpoint_path = resume
+    else:
+        checkpoint_path = None
 
-    if os.path.exists(checkpoint_path):
+    if checkpoint_path and os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         # 兼容旧版本checkpoint (如果之前的key是 backbone., etc，现在可能是 netG_state_dict)
         # 假设新的SourceTrainer保存的是 netG_state_dict, netF_state_dict, netC_state_dict

@@ -241,7 +241,7 @@ class TargetTrainer:
                 
                 # CLIP TTA
                 outputs_detach = outputs.clone().detach()
-                self.optimizer_clip.load_state_dict(self.optim_clip_state)
+                # self.optimizer_clip.load_state_dict(self.optim_clip_state)
                 
                 clip_score = test_time_tuning(
                     self.clip_model,
@@ -356,6 +356,7 @@ class TargetTrainer:
             'netG_state_dict': self.netG.state_dict(),
             'netF_state_dict': self.netF.state_dict(),
             'netC_state_dict': self.netC.state_dict(),
+            'prompt_learner_state_dict': self.clip_model.prompt_learner.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'acc': acc,
             'config': self.config
@@ -363,6 +364,10 @@ class TargetTrainer:
         
         if is_best:
             save_path = os.path.join(self.save_dir, f"target_{source}2{target}_best.pth")
+            # 单独保存 prompt 权重
+            prompt_path = os.path.join(self.save_dir, f"prompt_{source}2{target}_best.pt")
+            torch.save(self.clip_model.prompt_learner.state_dict(), prompt_path)
+            self.logger.info(f"Prompt 权重已保存: {prompt_path}")
         else:
             save_path = os.path.join(self.save_dir, f"target_{source}2{target}_epoch{epoch}.pth")
         
