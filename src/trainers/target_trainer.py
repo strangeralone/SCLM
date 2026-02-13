@@ -191,8 +191,8 @@ class TargetTrainer:
                 feat = self.netF(feat)
                 logits = self.netC(feat)
                 
-                logits_softmax = nn.Softmax(dim=1)(logits)
-                self.logits_bank[indices] = logits_softmax.detach()
+                # logits_softmax = nn.Softmax(dim=1)(logits)
+                self.logits_bank[indices] = logits.detach()
         
         self.logger.info(f"Logits Bank 初始化完成，形状: {self.logits_bank.shape}")
     
