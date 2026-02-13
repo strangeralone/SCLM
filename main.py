@@ -172,7 +172,8 @@ def run_target_adaptation(config: dict, logger, device: torch.device, resume: st
         batch_size=config['train']['target']['batch_size'],
         train=True,
         num_workers=config['data']['num_workers'],
-        image_size=config['data']['image_size']
+        image_size=config['data']['image_size'],
+        split_ratio=1
     )
     
     test_loader = get_loader(
@@ -181,7 +182,8 @@ def run_target_adaptation(config: dict, logger, device: torch.device, resume: st
         batch_size=config['train']['target']['batch_size'],
         train=False,
         num_workers=config['data']['num_workers'],
-        image_size=config['data']['image_size']
+        image_size=config['data']['image_size'],
+        split_ratio=1
     )
     
     logger.info(f"目标域训练集大小: {len(train_loader.dataset)}")

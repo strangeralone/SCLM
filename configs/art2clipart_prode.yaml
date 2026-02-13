@@ -19,7 +19,7 @@ train:
   target:
     epochs: 30
     batch_size: 64
-    lr: 0.001
+    lr: 0.005
     lr_backbone: 0.0005
     momentum: 0.9
     weight_decay: 0.001

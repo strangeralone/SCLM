@@ -142,6 +142,10 @@ class OfficeHomeDataset(Dataset):
         shuffled = all_samples.copy()
         rng.shuffle(shuffled)
         
+        # 如果 split_ratio >= 1.0，直接返回全部数据（不做划分）
+        if self.split_ratio >= 1.0:
+            return shuffled
+        
         # 计算划分点
         split_idx = int(len(shuffled) * self.split_ratio)
         
@@ -187,7 +191,8 @@ def get_loader(
     num_workers: int = 4,
     image_size: int = 224,
     shuffle: Optional[bool] = None,
-    drop_last: bool = False
+    drop_last: bool = False,
+    split_ratio: float = 0.9
 ) -> DataLoader:
     """
     获取数据加载器
@@ -217,7 +222,8 @@ def get_loader(
         root=root,
         domain=domain,
         transform=transform,
-        train=train
+        train=train,
+        split_ratio=split_ratio
     )
     
     # 创建加载器
