@@ -108,7 +108,7 @@ def test_time_tuning(
     # TTA Loop
     for _ in range(tta_steps):
         # Forward pass (Normalization is handled inside model.forward)
-        logits = model(images)
+        logits, _ = model(images)
         prob = torch.softmax(logits, dim=1)
         
         # Loss: IIC / Mutual Information Maximization with Source
@@ -122,6 +122,6 @@ def test_time_tuning(
     
     # Final forward to get updated logits
     with torch.no_grad():
-        final_logits = model(images)
+        final_logits,  = model(images)
         
     return final_logits

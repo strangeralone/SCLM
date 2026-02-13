@@ -151,7 +151,7 @@ class TargetTrainer:
         self.clip_model = ClipTestTimeTuning(
             classnames=self.classnames,
             arch=self.clip_arch,
-            batch_size=self.config['train']['target']['batch_size'],
+            batch_size=None,
             n_ctx=self.n_ctx,
             ctx_init=self.ctx_init,
             device=self.device
@@ -243,7 +243,7 @@ class TargetTrainer:
                 
                 # CLIP TTA
                 outputs_detach = outputs.clone().detach()
-                # self.optimizer_clip.load_state_dict(self.optim_clip_state)
+                self.optimizer_clip.load_state_dict(self.optim_clip_state)
                 
                 clip_score = test_time_tuning(
                     self.clip_model,
