@@ -122,6 +122,6 @@ def test_time_tuning(
     
     # Final forward to get updated logits
     with torch.no_grad():
-        final_logits,  = model(images)
+        final_logits, _ = model(images)
         
     return final_logits
