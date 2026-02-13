@@ -138,7 +138,7 @@ class TargetTrainer:
         for name, param in self.netC.named_parameters():
             param_group.append({'params': param, 'lr': self.lr * 0.1})
         
-        self.optimizer = optim.SGD(param_group)
+        self.optimizer = optim.SGD(param_group, momentum=0.9, weight_decay=1e-3, nesterov=True)
         self.optimizer = op_copy(self.optimizer)
     
     def _init_clip_module(self):
