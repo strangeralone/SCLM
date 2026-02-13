@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import weight_norm as weightNorm
 from torchvision import models
 from typing import Optional, Tuple
 
@@ -68,29 +69,32 @@ class ResNetBackbone(nn.Module):
 class Bottleneck(nn.Module):
     """
     特征压缩层（Bottleneck）
-    Linear -> BatchNorm -> ReLU -> Dropout
+    type='bn': Linear -> BatchNorm（与原版 ProDe 一致）
+    type='ori': Linear only
     """
     
     def __init__(
         self,
         in_features: int = 2048,
         out_features: int = 256,
-        dropout: float = 0.5
+        type: str = "ori"
     ):
         """
         Args:
             in_features: 输入特征维度
             out_features: 输出特征维度
-            dropout: Dropout概率
+            type: 'bn'=Linear+BN, 'ori'=Linear only
         """
         super().__init__()
         
         self.in_features = in_features
         self.out_features = out_features
+        self.type = type
         
         self.fc = nn.Linear(in_features, out_features)
         self.bn = nn.BatchNorm1d(out_features, affine=True)
-        self.dropout = nn.Dropout(p=dropout)
+        self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(p=0.5)
         
         # 初始化
         nn.init.xavier_normal_(self.fc.weight)
@@ -105,9 +109,8 @@ class Bottleneck(nn.Module):
             压缩特征 [B, out_features]
         """
         x = self.fc(x)
-        x = self.bn(x)
-        x = F.relu(x)
-        x = self.dropout(x)
+        if self.type == "bn":
+            x = self.bn(x)
         return x
 
 
@@ -119,7 +122,8 @@ class Classifier(nn.Module):
     def __init__(
         self,
         in_features: int = 256,
-        num_classes: int = 65
+        num_classes: int = 65,
+        type: str = "linear"
     ):
         """
         Args:
@@ -130,12 +134,20 @@ class Classifier(nn.Module):
         
         self.in_features = in_features
         self.num_classes = num_classes
-        
-        self.fc = nn.Linear(in_features, num_classes)
+        self.type = type
+        if type == "wn":
+            self.fc = weightNorm(nn.Linear(in_features, num_classes), name="weight")
+        else:
+            self.fc = nn.Linear(in_features, num_classes)
         
         # 初始化
-        nn.init.xavier_normal_(self.fc.weight)
-        nn.init.constant_(self.fc.bias, 0.0)
+        self.fc.apply(self._init_weights)
+    
+    @staticmethod
+    def _init_weights(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_normal_(m.weight)
+            nn.init.constant_(m.bias, 0.0)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -366,17 +378,18 @@ def create_split_models(config: dict) -> Tuple[nn.Module, nn.Module, nn.Module]:
         pretrained=model_cfg['pretrained']
     )
     
-    # Bottleneck (netF)
+    # Bottleneck (netF) - type='bn' 与原版 ProDe 一致
     netF = Bottleneck(
         in_features=netG.out_features,
         out_features=model_cfg['bottleneck_dim'],
-        dropout=model_cfg['dropout']
+        type='bn'
     )
     
-    # Classifier (netC)
+    # Classifier (netC) - type='wn' 与原版 ProDe 一致
     netC = Classifier(
         in_features=model_cfg['bottleneck_dim'],
-        num_classes=data_cfg['num_classes']
+        num_classes=data_cfg['num_classes'],
+        type='wn'
     )
     
     return netG, netF, netC
