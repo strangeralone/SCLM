@@ -15,8 +15,8 @@ from copy import deepcopy
 
 from ..utils.logger import AverageMeter
 from ..utils.losses import IID_loss, entropy_loss
-from ..models.clip_module import ClipTestTimeTuning, test_time_tuning
-
+from ..models.clip_module import test_time_tuning
+from clip.custom_clip import ClipTestTimeTuning
 
 def lr_scheduler(optimizer, iter_num: int, max_iter: int, gamma: float = 10, power: float = 0.75):
     """学习率调度器"""
@@ -151,6 +151,7 @@ class TargetTrainer:
         self.clip_model = ClipTestTimeTuning(
             classnames=self.classnames,
             arch=self.clip_arch,
+            batch_size=self.config['train']['target']['batch_size'],
             n_ctx=self.n_ctx,
             ctx_init=self.ctx_init,
             device=self.device
@@ -190,7 +191,8 @@ class TargetTrainer:
                 feat = self.netF(feat)
                 logits = self.netC(feat)
                 
-                self.logits_bank[indices] = logits.detach()
+                logits_softmax = nn.Softmax(dim=1)(logits)
+                self.logits_bank[indices] = logits_softmax.detach()
         
         self.logger.info(f"Logits Bank 初始化完成，形状: {self.logits_bank.shape}")
     
@@ -259,22 +261,6 @@ class TargetTrainer:
                     new_clip = (outputs_detach - self.logits_bank_decay * bank_logits) + clip_score
                     clip_score_sm = F.softmax(new_clip, dim=1)
                     clip_pred = new_clip.argmax(dim=1)
-                    
-                    # if batch_idx % 20 == 0:
-                    #     # Debug: Pure CLIP Acc vs ProDe Acc
-                    #     pure_clip_acc = (clip_score.argmax(dim=1) == labels.to(self.device)).float().mean().item()
-                    #     prode_acc = (clip_pred == labels.to(self.device)).float().mean().item()
-                        
-                    #     self.logger.info(f"debug - Batch {batch_idx}: Pure CLIP Acc={pure_clip_acc*100:.2f}%, ProDe Acc={prode_acc*100:.2f}%")
-                    #     self.logger.info(f"debug - clip_score range: {clip_score.min():.4f} to {clip_score.max():.4f}")
-                    #     self.logger.info(f"debug - new_clip range: {new_clip.min():.4f} to {new_clip.max():.4f}")
-                    #     self.logger.info(f"debug - bank_logits range: {bank_logits.min():.4f} to {bank_logits.max():.4f}")
-                    #     self.logger.info(f"debug - outputs_detach range: {outputs_detach.min():.4f} to {outputs_detach.max():.4f}")
-                    #     self.logger.info(f"debug - new_clip range: {new_clip.min():.4f} to {new_clip.max():.4f}")
-                    #     self.logger.info(f"debug - clip_pred[:10]: {clip_pred[:10].tolist()}")
-                    #     # 检查是否有 collapse
-                    #     unique_preds = torch.unique(clip_pred)
-                    #     self.logger.info(f"debug - unique preds count in batch: {len(unique_preds)}")
                 
                 # 损失计算（严格按照原版 ProDe 顺序）
                 # 1. IIC Loss: 对齐源模型输出和 CLIP 输出
