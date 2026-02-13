@@ -126,22 +126,19 @@ class TargetTrainer:
         return [str(i) for i in range(self.num_classes)]
     
     def _init_optimizers(self, train_cfg: Dict):
-        """初始化优化器（与 ProDe 一致：所有参数使用相同 LR）"""
-        # 源模型优化器 - 所有参数使用相同学习率
+        """初始化优化器（与 ProDe 一致：分层学习率）"""
         param_group = []
+        # netG (backbone): LR × 0.1
         for name, param in self.netG.named_parameters():
-            param_group.append({'params': param, 'lr': self.lr})
+            param_group.append({'params': param, 'lr': self.lr * 0.1})
+        # netF (bottleneck): LR × 1.0（全量学习率）
         for name, param in self.netF.named_parameters():
-            param_group.append({'params': param, 'lr': self.lr})
+            param_group.append({'params': param, 'lr': self.lr * 1.0})
+        # netC (classifier): LR × 0.1
         for name, param in self.netC.named_parameters():
-            param_group.append({'params': param, 'lr': self.lr})
+            param_group.append({'params': param, 'lr': self.lr * 0.1})
         
-        self.optimizer = optim.SGD(
-            param_group,
-            momentum=train_cfg.get('momentum', 0.9),
-            weight_decay=train_cfg.get('weight_decay', 1e-3),
-            nesterov=True
-        )
+        self.optimizer = optim.SGD(param_group)
         self.optimizer = op_copy(self.optimizer)
     
     def _init_clip_module(self):
