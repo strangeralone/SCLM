@@ -237,7 +237,19 @@ class TargetTrainer:
                 feat = self.netF(feat)
                 outputs = self.netC(feat)
                 softmax_out = F.softmax(outputs, dim=1)
-                
+
+                # 加 16×16 高斯噪声
+                noise = torch.randn_like(images) * 0.1  # std=0.1，可调
+                noisy_images = images + noise
+
+                feat = self.netG(noisy_images)
+                feat = self.netF(feat)
+                noise_outputs = self.netC(feat)
+                noise_softmax_out = F.softmax(noise_outputs, dim=1)
+
+                outputs = (outputs + noise_outputs) / 2 # 合并噪声预测
+                softmax_out = (softmax_out + noise_softmax_out) / 2
+            
                 # CLIP TTA
                 outputs_detach = outputs.clone().detach()
                 self.optimizer_clip.load_state_dict(self.optim_clip_state)
