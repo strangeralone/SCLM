@@ -238,18 +238,7 @@ class TargetTrainer:
                 outputs = self.netC(feat)
                 softmax_out = F.softmax(outputs, dim=1)
 
-                # 加 16×16 高斯噪声
-                noise = torch.randn_like(images) * 0.1  # std=0.1，可调
-                noisy_images = images + noise
 
-                feat = self.netG(noisy_images)
-                feat = self.netF(feat)
-                noise_outputs = self.netC(feat)
-                noise_softmax_out = F.softmax(noise_outputs, dim=1)
-
-                outputs = (outputs + noise_outputs) / 2 # 合并噪声预测
-                softmax_out = (softmax_out + noise_softmax_out) / 2
-            
                 # CLIP TTA
                 outputs_detach = outputs.clone().detach()
                 self.optimizer_clip.load_state_dict(self.optim_clip_state)
@@ -270,6 +259,22 @@ class TargetTrainer:
                     new_clip = (outputs_detach - self.logits_bank_decay * bank_logits) + clip_score
                     clip_score_sm = F.softmax(new_clip, dim=1)
                     clip_pred = new_clip.argmax(dim=1)
+                    
+                    # 生成噪声并用于计算 CLIP 一致性
+                    noise = torch.randn(images.size(0), images.size(1), 16, 16, device=self.device)
+                    noise = F.interpolate(noise, size=images.shape[2:], mode='bilinear')
+                    noisy_images = images + noise * 0.1
+                    
+                    self.clip_model.eval() # 同样是不求梯度只做一次 inference
+                    noisy_clip_logits = self.clip_model(noisy_images)
+                    if isinstance(noisy_clip_logits, tuple):
+                        noisy_clip_logits = noisy_clip_logits[0]
+                        
+                    # 直接使用 CLIP 的噪声预测作为一致性验证的标准 (移除 bank 的干扰)
+                    noisy_clip_pred = noisy_clip_logits.argmax(dim=1)
+                    
+                    # 这里就是由强大的 CLIP 提供的一致性掩码：
+                    consistency_mask = (clip_pred == noisy_clip_pred).float()
                 
                 # 损失计算（严格按照原版 ProDe 顺序）
                 # 1. IIC Loss: 对齐源模型输出和 CLIP 输出
@@ -281,8 +286,16 @@ class TargetTrainer:
                 gentropy_loss = torch.sum(-msoftmax * torch.log(msoftmax + self.epsilon))
                 classifier_loss = classifier_loss - self.div_weight * gentropy_loss
                 
-                # 3. CE Loss: 用 CLIP 预测作为伪标签（最后加）
-                ce_loss = F.cross_entropy(outputs, clip_pred)
+                # 3. CE Loss: 用 CLIP 预测作为伪标签并结合一致性 Mask
+                ce_loss_none = F.cross_entropy(outputs, clip_pred, reduction='none')
+                
+                # 只保留预测一致的样本的 CE loss
+                valid_samples = consistency_mask.sum()
+                if valid_samples > 0:
+                    ce_loss = (ce_loss_none * consistency_mask).sum() / valid_samples
+                else:
+                    ce_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                    
                 total_loss = self.gent_par * ce_loss + classifier_loss
                 
                 # 反向传播
