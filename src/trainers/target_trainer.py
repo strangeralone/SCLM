@@ -260,7 +260,7 @@ class TargetTrainer:
                     clip_score_sm = F.softmax(new_clip, dim=1)
                     clip_pred = new_clip.argmax(dim=1)
                     
-                    # 生成噪声并用于计算 CLIP 一致性
+                    # 2. 生成噪声并用于计算 CLIP 的【抗噪一致性】
                     noise = torch.randn(images.size(0), images.size(1), 16, 16, device=self.device)
                     noise = F.interpolate(noise, size=images.shape[2:], mode='bilinear')
                     noisy_images = images + noise * 0.1
@@ -273,8 +273,21 @@ class TargetTrainer:
                     # 直接使用 CLIP 的噪声预测作为一致性验证的标准 (移除 bank 的干扰)
                     noisy_clip_pred = noisy_clip_logits.argmax(dim=1)
                     
-                    # 这里就是由强大的 CLIP 提供的一致性掩码：
+                    # 掩码条件 A：由强大的 CLIP 提供的一致性掩码
                     consistency_mask = (clip_pred == noisy_clip_pred).float()
+                    
+                    # 掩码条件 B：动态置信度阈值 (Dynamic Confidence Thresholding)
+                    start_threshold = 0.70
+                    end_threshold = 0.60
+                    # 线性退火计算当前的 Epoch 阈值
+                    current_threshold = start_threshold - (start_threshold - end_threshold) * (epoch / self.max_epoch)
+                    
+                    # 提取 CLIP 原始预测的最大概率，看它有没有超过我们设定的门槛
+                    clip_max_probs = clip_score_sm.max(dim=1)[0]
+                    confidence_mask = (clip_max_probs > current_threshold).float()
+                    
+                    # 终极黄金掩码 = 既要抗噪一致，又要高置信度
+                    final_mask = consistency_mask * confidence_mask
                 
                 # 损失计算（严格按照原版 ProDe 顺序）
                 # 1. IIC Loss: 对齐源模型输出和 CLIP 输出
@@ -289,10 +302,10 @@ class TargetTrainer:
                 # 3. CE Loss: 用 CLIP 预测作为伪标签并结合一致性 Mask
                 ce_loss_none = F.cross_entropy(outputs, clip_pred, reduction='none')
                 
-                # 只保留预测一致的样本的 CE loss
-                valid_samples = consistency_mask.sum()
+                # 只保留预测一致且高置信度的样本的 CE loss
+                valid_samples = final_mask.sum()
                 if valid_samples > 0:
-                    ce_loss = (ce_loss_none * consistency_mask).sum() / valid_samples
+                    ce_loss = (ce_loss_none * final_mask).sum() / valid_samples
                 else:
                     ce_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
                     
