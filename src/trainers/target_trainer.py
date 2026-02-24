@@ -239,55 +239,33 @@ class TargetTrainer:
                 softmax_out = F.softmax(outputs, dim=1)
 
 
-                # CLIP TTA
-                outputs_detach = outputs.clone().detach()
-                self.optimizer_clip.load_state_dict(self.optim_clip_state)
-                
-                clip_score = test_time_tuning(
-                    self.clip_model,
-                    images,
-                    self.optimizer_clip,
-                    outputs_detach,
-                    self.tta_steps
-                )
-                clip_score = clip_score.float()
-                
-                # 计算修正后的 CLIP 分数
+                # ==================== 极简模式：利用 CLIP 纠正源模型的低信度预测 ====================
+                self.clip_model.eval()
                 with torch.no_grad():
-                    # 确保 logits_bank 在正确设备上
-                    bank_logits = self.logits_bank[indices].to(self.device)
-                    new_clip = (outputs_detach - self.logits_bank_decay * bank_logits) + clip_score
-                    clip_score_sm = F.softmax(new_clip, dim=1)
-                    clip_pred = new_clip.argmax(dim=1)
-                    
-                    # 2. 生成噪声并用于计算 CLIP 的【抗噪一致性】
-                    noise = torch.randn(images.size(0), images.size(1), 16, 16, device=self.device)
-                    noise = F.interpolate(noise, size=images.shape[2:], mode='bilinear')
-                    noisy_images = images + noise * 0.1
-                    
-                    self.clip_model.eval() # 同样是不求梯度只做一次 inference
-                    noisy_clip_logits = self.clip_model(noisy_images)
-                    if isinstance(noisy_clip_logits, tuple):
-                        noisy_clip_logits = noisy_clip_logits[0]
+                    # 1. 直接获取 CLIP 的零样本 (Zero-shot) 预测，不进行 TTA 和扰动
+                    clip_logits = self.clip_model(images)
+                    if isinstance(clip_logits, tuple):
+                        clip_logits = clip_logits[0]
                         
-                    # 直接使用 CLIP 的噪声预测作为一致性验证的标准 (移除 bank 的干扰)
-                    noisy_clip_pred = noisy_clip_logits.argmax(dim=1)
+                    clip_score_sm = F.softmax(clip_logits, dim=1)
+                    clip_pred = clip_logits.argmax(dim=1)
                     
-                    # 掩码条件 A：由强大的 CLIP 提供的一致性掩码
-                    consistency_mask = (clip_pred == noisy_clip_pred).float()
-                    
-                    # 掩码条件 B：动态置信度阈值 (Dynamic Confidence Thresholding)
-                    start_threshold = 0.70
-                    end_threshold = 0.60
-                    # 线性退火计算当前的 Epoch 阈值
-                    current_threshold = start_threshold - (start_threshold - end_threshold) * (epoch / self.max_epoch)
-                    
-                    # 提取 CLIP 原始预测的最大概率，看它有没有超过我们设定的门槛
-                    clip_max_probs = clip_score_sm.max(dim=1)[0]
-                    confidence_mask = (clip_max_probs > current_threshold).float()
-                    
-                    # 终极黄金掩码 = 既要抗噪一致，又要高置信度
-                    final_mask = consistency_mask * confidence_mask
+                # 2. 计算源模型的表现（置信度 & 熵）
+                max_probs = softmax_out.max(dim=1)[0]
+                # 计算信息熵: entropy = -sum(p * log(p))
+                entropy = -torch.sum(softmax_out * torch.log(softmax_out + 1e-5), dim=1)
+                
+                # 3. 设定条件：源模型准确率低 (即置信度低) 且 熵高 的情况
+                # 提示：这里的阈值可以根据实际效果在 config 中配置或直接下面微调
+                conf_threshold = 0.60    # 置信度阈值
+                # entropy_threshold = 1.0  # 熵的阈值（类别数为65等时，最大熵约为 log(65) ≈ 4.17，设1.0属于中等熵）
+                
+                low_conf_mask = (max_probs < conf_threshold)
+                # high_entropy_mask = (entropy > entropy_threshold)
+                
+                # 终极掩码：当且仅当源模型犹豫不决时，才用 CLIP
+                final_mask = (low_conf_mask).float()
+                # ==============================================================================
                 
                 # 损失计算（严格按照原版 ProDe 顺序）
                 # 1. IIC Loss: 对齐源模型输出和 CLIP 输出

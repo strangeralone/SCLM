@@ -9,7 +9,7 @@ Usage:
     python main.py --mode source -c configs/art2clipart.yaml
     
     # 目标域适应
-    python main.py --mode target -c configs/art2clipart.yaml
+    python main.py --mode target -c configs/art2clipart_prode.yaml
     
     # 使用默认配置
     python main.py --mode source
