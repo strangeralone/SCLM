@@ -55,6 +55,16 @@ class ClipTestTimeTuning(nn.Module):
         # Expose prompt_learner for external access/optimization
         return self.model.prompt_learner
 
+    def _convert_normalization(self, images: torch.Tensor) -> torch.Tensor:
+        """ImageNet 归一化 -> CLIP 归一化"""
+        mean_in = torch.tensor([0.485, 0.456, 0.406], device=images.device).view(1, 3, 1, 1)
+        std_in = torch.tensor([0.229, 0.224, 0.225], device=images.device).view(1, 3, 1, 1)
+        mean_out = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=images.device).view(1, 3, 1, 1)
+        std_out = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=images.device).view(1, 3, 1, 1)
+        x = images * std_in + mean_in
+        x = (x - mean_out) / std_out
+        return x
+
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -62,24 +72,35 @@ class ClipTestTimeTuning(nn.Module):
         Returns:
             logits: [B, n_cls]
         """
-        # 1. Normalization Correction: ImageNet -> CLIP
-        # ImageNet
-        mean_in = torch.tensor([0.485, 0.456, 0.406], device=images.device).view(1, 3, 1, 1)
-        std_in = torch.tensor([0.229, 0.224, 0.225], device=images.device).view(1, 3, 1, 1)
-        # CLIP
-        mean_out = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=images.device).view(1, 3, 1, 1)
-        std_out = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=images.device).view(1, 3, 1, 1)
-        
-        # De-normalize (ImageNet) -> [0, 1]
-        x = images * std_in + mean_in
-        # Re-normalize (CLIP)
-        x = (x - mean_out) / std_out
-        
-        # 2. Inference using internal model
-        # inference returns (logits, text_features)
+        x = self._convert_normalization(images)
         logits, _ = self.model.inference(x)
-        
         return logits
+    
+    def get_image_features(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        获取 CLIP 视觉特征（L2归一化后）
+        
+        Args:
+            images: [B, C, H, W] (ImageNet Normalized)
+        Returns:
+            image_features: [B, clip_dim] (已L2归一化)
+        """
+        x = self._convert_normalization(images)
+        with torch.no_grad():
+            image_features = self.model.image_encoder(x.type(self.dtype))
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        return image_features.float()
+    
+    def get_text_features(self) -> torch.Tensor:
+        """
+        获取每个类的 CLIP 文本特征作为锚点（L2归一化后）
+        
+        Returns:
+            text_features: [n_cls, clip_dim] (已L2归一化)
+        """
+        with torch.no_grad():
+            text_features = self.model.get_text_features()
+        return text_features.float()
 
 # Re-export PromptLearner and TextEncoder for compatibility if needed elsewhere
 # But mostly ClipTestTimeTuning is checked.

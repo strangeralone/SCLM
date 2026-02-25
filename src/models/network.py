@@ -254,6 +254,56 @@ class FeatureAdapter(nn.Module):
         return x + velocity
 
 
+class FeatureProjector(nn.Module):
+    """
+    CLIP -> 源模型特征空间投影层
+    
+    将 CLIP 视觉/文本特征（如512维）映射到源模型 bottleneck 空间（如256维），
+    使不同模型的特征可以在同一空间中比较。
+    
+    结构: Linear -> BN -> ReLU -> Linear
+    """
+    
+    def __init__(self, clip_dim: int = 512, target_dim: int = 256, hidden_dim: int = 384):
+        """
+        Args:
+            clip_dim: CLIP 特征维度 (ViT-B/32 = 512, ViT-L/14 = 768)
+            target_dim: 目标特征维度 (Bottleneck 输出维度)
+            hidden_dim: 隐藏层维度
+        """
+        super().__init__()
+        
+        self.projector = nn.Sequential(
+            nn.Linear(clip_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, target_dim)
+        )
+        
+        # 初始化
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: CLIP 特征 [B, clip_dim]
+            
+        Returns:
+            投影后的特征 [B, target_dim]
+        """
+        return self.projector(x)
+
+
 class FullModel(nn.Module):
     """
     完整模型: Backbone + Bottleneck + Classifier

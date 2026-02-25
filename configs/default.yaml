@@ -58,6 +58,25 @@ train:
         n_ctx: 4                   # Context token 数量
         ctx_init: "a_photo_of_a"   # Prompt 初始化
         lr_decay: 0.1              # CLIP prompt 学习率衰减
+      
+      # 三方一致性
+      consensus_conf_threshold: 0.7  # 单样本 softmax 置信度阈值
+      noise_std: 0.02                # 高斯扰动标准差
+      
+      # KNN 标签修正
+      knn_k: 7                      # 近邻数（奇数避免平票）
+      
+      # Mixup
+      mixup_alpha: 0.8              # Beta 分布参数
+      mixup_weight: 0.3             # Mixup CE loss 权重
+      mixup_label_bias: 0.7         # 标签偏向高可信的最小权重
+      
+      # CLIP 文本锚点
+      anchor_weight: 0.1            # 锚点对齐 loss 权重
+      projector_hidden_dim: 384     # 投影层隐藏维度
+      
+      # 可视化
+      vis_interval: 5               # 每多少个 epoch 画图
 
   # Adapter-based 目标域适应 (保留备用)
   adapter:
