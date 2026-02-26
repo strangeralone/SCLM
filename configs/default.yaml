@@ -61,7 +61,7 @@ train:
       
       # 三方一致性
       consensus_conf_threshold: 0.7  # 单样本 softmax 置信度阈值
-      noise_std: 0.02                # 高斯扰动标准差
+      noise_std: 0.1                # 高斯扰动标准差
       
       # KNN 标签修正
       knn_k: 7                      # 近邻数（奇数避免平票）

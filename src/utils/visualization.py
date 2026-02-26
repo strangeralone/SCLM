@@ -184,10 +184,10 @@ def plot_poisoning_tsne(
         c = class_to_color[cls]
         if correct_mask.sum() > 0:
             ax.scatter(features_2d[correct_mask, 0], features_2d[correct_mask, 1],
-                      c=[c], marker='o', alpha=0.5, s=15, label=f'Class {cls} ✓')
+                      c=[c], marker='o', alpha=0.5, s=15, label=f'Class {cls} correct')
         if wrong_mask.sum() > 0:
             ax.scatter(features_2d[wrong_mask, 0], features_2d[wrong_mask, 1],
-                      c=[c], marker='x', alpha=0.7, s=25, label=f'Class {cls} ✗')
+                      c=[c], marker='x', alpha=0.7, s=25, label=f'Class {cls} wrong')
     
     total_err = (~correct).sum() / len(correct) * 100
     ax.set_title(f'Pseudo-label Poisoning (Top-{len(top_classes)} Error Classes, Error: {total_err:.1f}%)', fontsize=13)

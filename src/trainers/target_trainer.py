@@ -18,9 +18,8 @@ from pathlib import Path
 from ..utils.logger import AverageMeter
 from ..utils.losses import IID_loss, entropy_loss
 from ..utils.visualization import generate_all_visualizations
-from ..models.clip_module import test_time_tuning
+from ..models.clip_module import test_time_tuning, ClipTestTimeTuning
 from ..models.network import FeatureProjector
-from clip.custom_clip import ClipTestTimeTuning
 
 
 def lr_scheduler(optimizer, iter_num: int, max_iter: int, gamma: float = 10, power: float = 0.75):
@@ -94,7 +93,7 @@ class TargetTrainer:
         # ========== 新增配置 ==========
         # 三方一致性
         self.consensus_conf_threshold = prode_cfg.get('consensus_conf_threshold', 0.7)
-        self.noise_std = prode_cfg.get('noise_std', 0.02)
+        self.noise_std = prode_cfg.get('noise_std', 0.1)
         
         # KNN
         self.knn_k = prode_cfg.get('knn_k', 7)
@@ -453,11 +452,6 @@ class TargetTrainer:
         all_clip_noisy_pred_cat = np.concatenate(all_clip_noisy_pred)
         all_max_probs_cat = np.concatenate(all_max_probs)
         
-        # 三方一致 → 伪标签
-        consensus = (all_src_pred_cat == all_clip_pred_cat) & \
-                    (all_clip_pred_cat == all_clip_noisy_pred_cat) & \
-                    (all_max_probs_cat > self.consensus_conf_threshold)
-        
         pseudo_labels = all_src_pred_cat.copy()  # 默认用源模型预测
         
         return {
@@ -470,23 +464,18 @@ class TargetTrainer:
             'clip_noisy_pred': all_clip_noisy_pred_cat
         }
     
-    def _maybe_visualize(self, epoch: int, is_best: bool = False):
+    def _maybe_visualize(self, epoch: int):
         """
         按条件生成可视化图表
         
-        保存时机: Epoch 1 / 每 vis_interval 个 epoch / best acc 更新时
+        保存时机: Epoch 1 / 每 vis_interval 个 epoch
         """
-        should_vis = (epoch == 1) or (epoch % self.vis_interval == 0) or is_best
+        should_vis = (epoch == 1) or (epoch % self.vis_interval == 0)
         if not should_vis:
             return
         
         # 确定保存目录
-        if is_best:
-            save_dir = os.path.join(self.vis_base_dir, 'best')
-        else:
-            save_dir = os.path.join(self.vis_base_dir, f'epoch{epoch}')
-        
-        self.logger.info(f"生成 Epoch {epoch} 可视化 ({'best' if is_best else 'periodic'})...")
+        save_dir = os.path.join(self.vis_base_dir, f'epoch{epoch}')
         
         # 收集数据
         vis_data = self._collect_vis_data()
@@ -508,7 +497,7 @@ class TargetTrainer:
             num_classes=self.num_classes,
             current_epoch=epoch,
             features_epoch1=self.epoch1_features,
-            logger=self.logger
+            logger=None
         )
     
     def train(self) -> None:
@@ -596,13 +585,13 @@ class TargetTrainer:
                 consensus_meter.update(consensus_ratio * 100, images.size(0))
                 
                 # 高可信样本的伪标签 = 三方一致的预测
-                consensus_labels = src_pred.clone()
+                # consensus_labels = src_pred.clone()
                 
                 # ==================== 4. KNN 标签修正 ====================
-                with torch.no_grad():
-                    corrected_labels = self._knn_label_correction(
-                        feat.detach(), consensus_mask, consensus_labels
-                    )
+                # with torch.no_grad():
+                #     corrected_labels = self._knn_label_correction(
+                #         feat.detach(), consensus_mask, consensus_labels
+                #     )
                 
                 # ==================== 5. Loss 计算 ====================
                 
@@ -615,45 +604,46 @@ class TargetTrainer:
                 
                 # 5c. CE Loss: 用三方一致的伪标签（只对高可信样本）
                 if consensus_mask.sum() > 0:
-                    ce_loss = F.cross_entropy(outputs[consensus_mask], corrected_labels[consensus_mask])
+                    # ce_loss = F.cross_entropy(outputs[consensus_mask], corrected_labels[consensus_mask])
+                    ce_loss = F.cross_entropy(outputs, clip_pred)
                 else:
                     ce_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
                 
-                # 5d. Mixup CE Loss
-                high_mask = consensus_mask
-                low_mask = ~consensus_mask
+                # # 5d. Mixup CE Loss
+                # high_mask = consensus_mask
+                # low_mask = ~consensus_mask
                 
-                if high_mask.sum() > 0 and low_mask.sum() > 0:
-                    mixed_feat, mixed_labels = self._feature_mixup(
-                        feat[high_mask].detach(), corrected_labels[high_mask],
-                        feat[low_mask].detach(), corrected_labels[low_mask]
-                    )
-                    # 用混合特征过分类器
-                    mixed_logits = self.netC(mixed_feat)
-                    # 软标签 CE: -sum(y * log_softmax(logits))
-                    mixup_ce_loss = -torch.sum(
-                        mixed_labels * F.log_softmax(mixed_logits, dim=1), dim=1
-                    ).mean()
-                else:
-                    mixup_ce_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                # if high_mask.sum() > 0 and low_mask.sum() > 0:
+                #     mixed_feat, mixed_labels = self._feature_mixup(
+                #         feat[high_mask].detach(), corrected_labels[high_mask],
+                #         feat[low_mask].detach(), corrected_labels[low_mask]
+                #     )
+                #     # 用混合特征过分类器
+                #     mixed_logits = self.netC(mixed_feat)
+                #     # 软标签 CE: -sum(y * log_softmax(logits))
+                #     mixup_ce_loss = -torch.sum(
+                #         mixed_labels * F.log_softmax(mixed_logits, dim=1), dim=1
+                #     ).mean()
+                # else:
+                #     mixup_ce_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
                 
                 # 5e. CLIP 文本锚点对齐 Loss（只对低可信样本）
-                if low_mask.sum() > 0:
-                    anchor_loss = self._anchor_align_loss(
-                        feat[low_mask].detach(),
-                        corrected_labels[low_mask],
-                        clip_image_feat[low_mask]
-                    )
-                else:
-                    anchor_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+                # if low_mask.sum() > 0:
+                #     anchor_loss = self._anchor_align_loss(
+                #         feat[low_mask].detach(),
+                #         corrected_labels[low_mask],
+                #         clip_image_feat[low_mask]
+                #     )
+                # else:
+                #     anchor_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
                 
                 # 5f. 总 Loss
                 total_loss = (
                     self.iic_par * iic_loss
                     + self.gent_par * ce_loss
                     - self.div_weight * gentropy_loss
-                    + self.mixup_weight * mixup_ce_loss
-                    + self.anchor_weight * anchor_loss
+                    # + self.mixup_weight * mixup_ce_loss
+                    # + self.anchor_weight * anchor_loss
                 )
                 
                 # ==================== 6. 反向传播 ====================
@@ -668,8 +658,8 @@ class TargetTrainer:
                 iic_meter.update(iic_loss.item(), images.size(0))
                 ce_meter.update(ce_loss.item(), images.size(0))
                 div_meter.update(gentropy_loss.item(), images.size(0))
-                mixup_meter.update(mixup_ce_loss.item(), images.size(0))
-                anchor_meter.update(anchor_loss.item(), images.size(0))
+                # mixup_meter.update(mixup_ce_loss.item(), images.size(0))
+                # anchor_meter.update(anchor_loss.item(), images.size(0))
                 
                 pbar.set_postfix({
                     'loss': f'{loss_meter.avg:.4f}',
@@ -692,7 +682,7 @@ class TargetTrainer:
             )
             
             # 可视化
-            self._maybe_visualize(epoch, is_best=is_best)
+            self._maybe_visualize(epoch)
             
             # 保存最佳模型
             if is_best:
